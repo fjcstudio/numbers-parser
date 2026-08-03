@@ -2503,6 +2503,62 @@ class _NumbersModel(Cacheable):
             ),
         )
 
+    def clip_stroke_runs(self, stroke_layer: object, origin: int, length: int) -> None:
+        """Trim or split existing stroke runs so none overlaps a new run's range."""
+        end = origin + length
+        clipped = []
+        for stroke_run in stroke_layer.stroke_runs:
+            run_end = stroke_run.origin + stroke_run.length
+            if run_end <= origin or stroke_run.origin >= end:
+                # No overlap with the new run
+                clipped.append(self.copy_stroke(stroke_run))
+            else:
+                if stroke_run.origin < origin:
+                    head = self.copy_stroke(stroke_run)
+                    head.length = origin - stroke_run.origin
+                    clipped.append(head)
+                if run_end > end:
+                    tail = self.copy_stroke(stroke_run)
+                    tail.origin = end
+                    tail.length = run_end - end
+                    clipped.append(tail)
+        clear_field_container(stroke_layer.stroke_runs)
+        stroke_layer.stroke_runs.extend(clipped)
+
+    def copy_stroke(self, stroke_run: object):
+        """Return a standalone copy of a stroke run."""
+        stroke_copy = TSTArchives.StrokeLayerArchive.StrokeRunArchive()
+        stroke_copy.CopyFrom(stroke_run)
+        return stroke_copy
+
+    def reconcile_cell_borders(self, table_id: int, data: list) -> None:
+        """
+        Copy borders onto adjacent cells where set_cell_border() could not.
+
+        A bottom border is stored both on its own cell and mirrored onto the next
+        row's top; a right border is mirrored onto the next column's left. The
+        mirror cannot happen if the adjacent row or column does not exist when the
+        border is set, so repair any missing mirrors before the strokes are rebuilt.
+        """
+        num_rows = len(data)
+        num_cols = len(data[0])
+
+        for row in range(num_rows - 1):
+            for col in range(num_cols):
+                border = data[row][col]._border.bottom
+                if border is None or data[row + 1][col]._border.top is not None:
+                    continue
+                if (cell := self.cell_for_stroke(table_id, "top", row + 1, col)) is not None:
+                    cell._border.top = border
+
+        for col in range(num_cols - 1):
+            for row in range(num_rows):
+                border = data[row][col]._border.right
+                if border is None or data[row][col + 1]._border.left is not None:
+                    continue
+                if (cell := self.cell_for_stroke(table_id, "left", row, col + 1)) is not None:
+                    cell._border.left = border
+
     def update_cell_borders(self, table_id: int, data: list) -> None:
         """Consolidate identical strokes and then generate stoke archives."""
         if table_id not in self._update_strokes:
@@ -2510,6 +2566,10 @@ class _NumbersModel(Cacheable):
 
         num_rows = self.objects[table_id].number_of_rows
         num_cols = self.objects[table_id].number_of_columns
+
+        # Bottom and right borders are only scanned at the closing edge of the table,
+        # so any that never reached the adjacent cell must be mirrored across first
+        self.reconcile_cell_borders(table_id, data)
 
         # Clear existing stroke layers to prepare for rebuilt, optimized strokes
         table_obj = self.objects[table_id]
@@ -2615,6 +2675,7 @@ class _NumbersModel(Cacheable):
             if self.objects[layer_id.identifier].row_column_index == row_column_index:
                 stroke_layer = self.objects[layer_id.identifier]
         if stroke_layer is not None:
+            self.clip_stroke_runs(stroke_layer, origin, length)
             stroke_layer.stroke_runs.append(self.create_stroke(origin, length, border_value))
             stroke_layer.stroke_runs.sort(key=lambda x: x.origin)
         else:

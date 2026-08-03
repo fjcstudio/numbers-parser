@@ -1,3 +1,7 @@
+# custom
+.claude
+/bugs
+
 # macOS
 .DS_Store
 .*.icloud

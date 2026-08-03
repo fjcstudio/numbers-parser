@@ -377,3 +377,100 @@ def test_resave_borders(configurable_save_file):
 
     doc.save(configurable_save_file)
     run_border_tests(configurable_save_file)
+
+
+def stroke_runs(table, side: str, index: int) -> list:
+    """Return (origin, length, red) for each stroke run in one layer of a table."""
+    model = table._model
+    sidecar = model.objects[model.objects[table._table_id].stroke_sidecar.identifier]
+    layer_ids = {
+        "top": sidecar.top_row_stroke_layers,
+        "bottom": sidecar.bottom_row_stroke_layers,
+        "left": sidecar.left_column_stroke_layers,
+        "right": sidecar.right_column_stroke_layers,
+    }[side]
+    for layer_id in layer_ids:
+        layer = model.objects[layer_id.identifier]
+        if layer.row_column_index == index:
+            return [
+                (run.origin, run.length, round(run.stroke.color.r * 255))
+                for run in layer.stroke_runs
+            ]
+    return []
+
+
+def test_add_stroke_splits_overlap():
+    black = Border(2.0, RGB(0, 0, 0), "solid")
+    red = Border(2.0, RGB(255, 0, 0), "solid")
+
+    # Changing the middle cell of a three cell border splits the original run
+    # in two rather than leaving a stale run underneath the new one
+    table = Document().sheets[0].tables[0]
+    table._model.add_stroke(table._table_id, 0, 0, "top", black, 3)
+    table._model.add_stroke(table._table_id, 0, 1, "top", red, 1)
+    assert stroke_runs(table, "top", 0) == [(0, 1, 0), (1, 1, 255), (2, 1, 0)]
+
+    # The same split with a wider original run and a multi-cell replacement
+    table = Document().sheets[0].tables[0]
+    table._model.add_stroke(table._table_id, 0, 0, "top", black, 10)
+    table._model.add_stroke(table._table_id, 0, 3, "top", red, 3)
+    assert stroke_runs(table, "top", 0) == [(0, 3, 0), (3, 3, 255), (6, 4, 0)]
+
+    # A run entirely covered by the new one is replaced, not duplicated
+    table = Document().sheets[0].tables[0]
+    table._model.add_stroke(table._table_id, 0, 2, "top", black, 2)
+    table._model.add_stroke(table._table_id, 0, 0, "top", red, 6)
+    assert stroke_runs(table, "top", 0) == [(0, 6, 255)]
+
+
+def test_border_survives_write(configurable_save_file):
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.set_cell_border(2, 0, "top", border, 1)
+    # Writing a value replaces the cell object; the border must come with it
+    table.write(2, 0, "some text")
+    doc.save(configurable_save_file)
+
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(2, 0).value == "some text"
+    assert table.cell(2, 0).border.top == border
+
+
+def test_border_survives_row_growth(configurable_save_file):
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows > 3:
+        table.delete_row()
+
+    # Row 2 is the last row, so the border cannot be mirrored onto row 3
+    table.set_cell_border(2, 0, "bottom", border, 1)
+    table.add_row()
+    table.add_row()
+    doc.save(configurable_save_file)
+
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(2, 0).border.bottom == border
+    assert table.cell(3, 0).border.top == border
+
+
+def test_border_survives_column_growth(configurable_save_file):
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_cols > 3:
+        table.delete_column()
+
+    # Column 2 is the last column, so the border cannot be mirrored onto column 3
+    table.set_cell_border(0, 2, "right", border, 1)
+    table.add_column()
+    table.add_column()
+    doc.save(configurable_save_file)
+
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(0, 2).border.right == border
+    assert table.cell(0, 3).border.left == border

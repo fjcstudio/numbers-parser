@@ -986,9 +986,12 @@ class Table(Cacheable):
             If the cell type cannot be determined from the type of `param3`.
 
         """
-        # TODO: write needs to retain/init the border
         (row, col, value) = self._validate_cell_coords(*args)
+        # Borders are recomputed from cell state at save time, so the replacement
+        # cell must carry forward the border of the cell it displaces
+        border = getattr(self._data[row][col], "_border", None)
         self._data[row][col] = Cell._from_value(row, col, value)
+        self._data[row][col]._border = border
         self._data[row][col]._update_value(value, self._data[row][col])
 
         merge_cells = self._model.merge_cells(self._table_id)
