@@ -474,3 +474,258 @@ def test_border_survives_column_growth(configurable_save_file):
     table = Document(configurable_save_file).sheets[0].tables[0]
     assert table.cell(0, 2).border.right == border
     assert table.cell(0, 3).border.left == border
+
+
+def test_border_follows_row_on_insert(configurable_save_file):
+    """Confirmed directly: add_row() correctly moves a row's own cell
+    values/styles to their new row index, but previously left that
+    row's own border behind at its OLD physical row index -- the
+    stroke sidecar is a separate structure, keyed by its own
+    row_column_index independent of any Cell object, that add_row()
+    never touched. Only manifests after a genuine save/reopen -- an
+    in-memory check immediately after add_row() can look correct before
+    this actually surfaces, so this test goes through a real save and
+    reopen, twice, matching how the bug was actually found."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 5:
+        table.add_row()
+    table.set_cell_border(3, 0, "top", border, table.num_cols)
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.add_row(1, start_row=1)
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    # Row 3's own content shifted to row 4 -- its border should too.
+    assert table3.cell(4, 0).border.top == border
+    assert table3.cell(3, 0).border.top is None
+
+
+def test_border_follows_column_on_insert(configurable_save_file):
+    """The column-axis mirror of test_border_follows_row_on_insert --
+    see that test's own docstring for the full reasoning."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.set_cell_border(0, 3, "left", border, table.num_rows)
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.add_column(1, start_col=1)
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    # Column 3's own content shifted to column 4 -- its border should too.
+    assert table3.cell(0, 4).border.left == border
+    assert table3.cell(0, 3).border.left is None
+
+
+def test_border_follows_row_on_delete(configurable_save_file):
+    """delete_row() has the identical gap add_row() had, in the
+    opposite direction: it correctly moves the remaining rows' own
+    content up to close the gap, but previously left a border behind at
+    its OLD row index rather than following its content up to the new
+    one."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 8:
+        table.add_row()
+    table.set_cell_border(5, 0, "top", border, table.num_cols)
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.delete_row(1, start_row=1)
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    # Row 5's own content shifted up to row 4 -- its border should too.
+    assert table3.cell(4, 0).border.top == border
+    assert table3.cell(5, 0).border.top is None
+
+
+def test_border_follows_column_on_delete(configurable_save_file):
+    """The column-axis mirror of test_border_follows_row_on_delete."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_cols < 8:
+        table.add_column()
+    table.set_cell_border(0, 5, "left", border, table.num_rows)
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.delete_column(1, start_col=1)
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    # Column 5's own content shifted left to column 4 -- its border should too.
+    assert table3.cell(0, 4).border.left == border
+    assert table3.cell(0, 5).border.left is None
+
+
+def test_border_removed_when_its_own_row_is_deleted(configurable_save_file):
+    """Deleting the row a border is actually ON (not just a row before
+    it) should remove that border entirely, rather than leaving it
+    dangling on whatever content now occupies that physical index."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 8:
+        table.add_row()
+    table.set_cell_border(5, 0, "top", border, table.num_cols)
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.delete_row(1, start_row=5)
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    assert all(table3.cell(r, 0).border.top is None for r in range(table3.num_rows))
+
+
+def test_multirow_vertical_border_grows_on_row_insert_within_span(configurable_save_file):
+    """A vertical (left/right) border's own row-range lives in a
+    DIFFERENT place than a horizontal border's row index does: the
+    enclosing stroke layer's own row_column_index is the COLUMN (a
+    vertical border is "on" a column), and the row range itself is the
+    layer's own stroke_run origin/length. Confirmed directly this was
+    a genuinely separate gap from the row_column_index one already
+    fixed above: shift_stroke_rows originally only adjusted
+    row_column_index on the row-indexed (top/bottom) layers, never
+    touching left/right layers' own stroke_run origin/length at all --
+    so a multi-row vertical border kept its exact original physical
+    span even after a row was inserted within it, silently misaligning
+    with the content that had actually shifted."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 10:
+        table.add_row()
+    table.set_cell_border(3, 2, "left", border, 3)  # rows 3-5
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.add_row(1, start_row=4)  # within the border's own row range
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    bordered = [r for r in range(table3.num_rows) if table3.cell(r, 2).border.left is not None]
+    assert bordered == [3, 4, 5, 6]
+
+
+def test_multirow_vertical_border_shifts_on_row_insert_before_span(configurable_save_file):
+    """The same border as above, but the insertion falls entirely
+    before its own row range -- the whole run should shift uniformly
+    (origin += n), not grow."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 10:
+        table.add_row()
+    table.set_cell_border(3, 2, "left", border, 3)  # rows 3-5
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.add_row(1, start_row=0)
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    bordered = [r for r in range(table3.num_rows) if table3.cell(r, 2).border.left is not None]
+    assert bordered == [4, 5, 6]
+
+
+def test_multirow_vertical_border_shrinks_on_row_delete_within_span(configurable_save_file):
+    """Deleting a row from WITHIN a multi-row vertical border's own
+    span should shrink it by the deleted amount, not leave it at its
+    original length covering the wrong physical rows."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 12:
+        table.add_row()
+    table.set_cell_border(5, 2, "left", border, 3)  # rows 5-7
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.delete_row(1, start_row=6)  # the middle row of the span
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    bordered = [r for r in range(table3.num_rows) if table3.cell(r, 2).border.left is not None]
+    assert bordered == [5, 6]
+
+
+def test_multirow_vertical_border_removed_when_its_entire_span_is_deleted(configurable_save_file):
+    """Deleting every row a vertical border's own span covers should
+    remove it entirely, the same way test_border_removed_when_its_own_
+    row_is_deleted already confirms for a horizontal border on a
+    single row."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 12:
+        table.add_row()
+    table.set_cell_border(5, 2, "left", border, 3)  # rows 5-7
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.delete_row(3, start_row=5)  # the entire span
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    assert all(table3.cell(r, 2).border.left is None for r in range(table3.num_rows))
+
+
+def test_multicolumn_horizontal_border_grows_on_column_insert_within_span(configurable_save_file):
+    """The column-axis mirror of
+    test_multirow_vertical_border_grows_on_row_insert_within_span --
+    see that test's own docstring for the full reasoning."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_cols < 10:
+        table.add_column()
+    table.set_cell_border(2, 3, "top", border, 3)  # columns 3-5
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    table2.add_column(1, start_col=4)  # within the border's own column range
+    doc2.save(configurable_save_file)
+
+    doc3 = Document(configurable_save_file)
+    table3 = doc3.sheets[0].tables[0]
+    bordered = [c for c in range(table3.num_cols) if table3.cell(2, c).border.top is not None]
+    assert bordered == [3, 4, 5, 6]

@@ -1247,7 +1247,7 @@ class _NumbersModel(Cacheable):
         self.recalculate_row_headers(table_id, data)
         self.recalculate_column_headers(table_id, data)
         self.recalculate_merged_cells(table_id)
-        self.update_paragraph_styles()
+        self.update_paragraph_styles(data)
         self.update_cell_styles(table_id, data)
         self.update_cell_borders(table_id, data)
 
@@ -1766,6 +1766,24 @@ class _NumbersModel(Cacheable):
             style.__dict__["_update_cell_style"] = False
         return styles
 
+    def _paragraph_style_font_name(self, font_name: str) -> str:
+        """
+        Return the on-disk font name for a style's own font_name,
+        falling back to DEFAULT_FONT (with a one-time-per-font warning)
+        for a custom/unrecognised font family -- the save-side mirror of
+        the fallback cell_font_name() already has for the read side.
+        """
+        if font_name not in FONT_FAMILY_TO_NAME:
+            if font_name not in self.missing_fonts:
+                warn(
+                    f"Custom font '{font_name}' unsupported; falling back to {DEFAULT_FONT}",
+                    UnsupportedWarning,
+                    stacklevel=3,
+                )
+                self.missing_fonts[font_name] = True
+            return FONT_FAMILY_TO_NAME[DEFAULT_FONT]
+        return FONT_FAMILY_TO_NAME[font_name]
+
     def add_paragraph_style(self, style: Style) -> int:
         if style.underline:
             underline = CharacterStyle.UnderlineType.kSingleUnderline
@@ -1799,7 +1817,7 @@ class _NumbersModel(Cacheable):
                     "underline": underline,
                     "strikethru": strikethru,
                     "font_size": style.font_size,
-                    "font_name": FONT_FAMILY_TO_NAME[style.font_name],
+                    "font_name": self._paragraph_style_font_name(style.font_name),
                     "tsd_fill": {
                         "color": {
                             "model": "rgb",
@@ -1854,7 +1872,7 @@ class _NumbersModel(Cacheable):
         style_obj.char_properties.underline = underline
         style_obj.char_properties.strikethru = strikethru
         style_obj.char_properties.font_size = style.font_size
-        style_obj.char_properties.font_name = FONT_FAMILY_TO_NAME[style.font_name]
+        style_obj.char_properties.font_name = self._paragraph_style_font_name(style.font_name)
         style_obj.char_properties.tsd_fill.color.r = style.font_color.r / 255
         style_obj.char_properties.tsd_fill.color.g = style.font_color.g / 255
         style_obj.char_properties.tsd_fill.color.b = style.font_color.b / 255
@@ -1863,10 +1881,19 @@ class _NumbersModel(Cacheable):
         style_obj.para_properties.left_indent = style.left_indent
         style_obj.para_properties.right_indent = style.right_indent
 
-    def update_paragraph_styles(self) -> None:
+    def update_paragraph_styles(self, data: list = None) -> None:
         """
         Create new paragraph style archives for any new styles that
-        have been created for this document.
+        have been created for this document, and re-save any existing
+        style that's been mutated.
+
+        `self.styles` only holds styles registered via the document's
+        own style registry (its theme presets, or add_style()) -- it's
+        never updated to include a Style object handed back by
+        cell.style, so a mutation made through cell.style is invisible
+        to the scan above it. When `data` (the table's own cells) is
+        given, scan it directly as well, the same way
+        update_cell_styles() already does for cell-level styles.
         """
         new_styles = [x for x in self.styles.values() if x._text_style_obj_id is None]
         updated_styles = [
@@ -1878,8 +1905,22 @@ class _NumbersModel(Cacheable):
             style._text_style_obj_id = self.add_paragraph_style(style)
             style._update_text_style = True
 
+        processed = {id(x) for x in updated_styles}
         for style in updated_styles:
             self.update_paragraph_style(style)
+
+        if data is not None:
+            for cells in data:
+                for cell in cells:
+                    style = cell._style
+                    if (
+                        style is not None
+                        and style._text_style_obj_id is not None
+                        and style._update_text_style
+                        and id(style) not in processed
+                    ):
+                        self.update_paragraph_style(style)
+                        processed.add(id(style))
 
     def update_cell_styles(self, table_id: int, data: list) -> None:
         """
@@ -2169,12 +2210,29 @@ class _NumbersModel(Cacheable):
                 return self.objects[table_model.footer_row_text_style.identifier]
         return self.objects[table_model.body_text_style.identifier]
 
+    def body_cell_style(self, table_id: int) -> object | None:
+        """
+        Return a table's own default body cell style, or None if it has
+        none. Used as the fallback for a cell with no explicit per-cell
+        style, in place of this library's own generic constants.
+        """
+        table_model = self.objects[table_id]
+        if not table_model.HasField("body_cell_style"):
+            return None
+        return self.objects[table_model.body_cell_style.identifier]
+
     def cell_alignment(self, cell: Cell) -> Alignment:
         style = self.cell_text_style(cell)
         horizontal = HorizontalJustification(self.para_property(style, "alignment"))
 
         if cell._cell_style_id is None:
-            vertical = VerticalJustification.TOP
+            body_style = self.body_cell_style(cell._table_id)
+            if body_style is not None:
+                vertical = VerticalJustification(
+                    self.cell_property(body_style, "vertical_alignment"),
+                )
+            else:
+                vertical = VerticalJustification.TOP
         else:
             style = self.table_style(cell._table_id, cell._cell_style_id)
             vertical = VerticalJustification(self.cell_property(style, "vertical_alignment"))
@@ -2182,9 +2240,12 @@ class _NumbersModel(Cacheable):
 
     def cell_bg_color(self, cell: Cell) -> tuple | list[tuple]:
         if cell._cell_style_id is None:
-            return None
+            style = self.body_cell_style(cell._table_id)
+            if style is None:
+                return None
+        else:
+            style = self.table_style(cell._table_id, cell._cell_style_id)
 
-        style = self.table_style(cell._table_id, cell._cell_style_id)
         cell_properties = style.cell_properties.cell_fill
 
         if cell_properties.HasField("color"):
@@ -2282,6 +2343,9 @@ class _NumbersModel(Cacheable):
 
     def cell_text_inset(self, cell: Cell) -> float:
         if cell._cell_style_id is None:
+            body_style = self.body_cell_style(cell._table_id)
+            if body_style is not None:
+                return self.cell_property(body_style, "padding").left
             return DEFAULT_TEXT_INSET
         style = self.table_style(cell._table_id, cell._cell_style_id)
         padding = self.cell_property(style, "padding")
@@ -2290,6 +2354,9 @@ class _NumbersModel(Cacheable):
 
     def cell_text_wrap(self, cell: Cell) -> float:
         if cell._cell_style_id is None:
+            body_style = self.body_cell_style(cell._table_id)
+            if body_style is not None:
+                return self.cell_property(body_style, "text_wrap")
             return DEFAULT_TEXT_WRAP
         style = self.table_style(cell._table_id, cell._cell_style_id)
         return self.cell_property(style, "text_wrap")
@@ -2445,6 +2512,222 @@ class _NumbersModel(Cacheable):
             key=lambda value: value[0],
         ):
             self.set_cell_border(table_id, row, col, side, border_value)
+
+    def _shift_stroke_runs_on_insert(self, layer_ids, insert_at: int, n: int) -> None:
+        """
+        Shared by shift_stroke_rows/shift_stroke_columns for the
+        CROSS-axis layers -- e.g. called by shift_stroke_rows on
+        left_column_stroke_layers/right_column_stroke_layers, whose own
+        stroke_runs (origin/length) represent a ROW range, the axis
+        being inserted into, even though the enclosing layer's own
+        row_column_index represents the (unaffected) column.
+
+        Same "shift the whole thing, or grow it, or leave it alone"
+        principle already used for SUM formula ranges
+        (insert_rows_with_formula_repair): a run entirely at or after
+        insert_at shifts by n; a run insert_at falls WITHIN grows by n
+        (its own origin stays put, only its length changes); a run
+        entirely before insert_at is unaffected.
+
+        Confirmed directly this was missing: shift_stroke_rows/
+        shift_stroke_columns originally only adjusted row_column_index
+        on the SAME-axis layers (top/bottom for rows, left/right for
+        columns) -- correct there, since row_column_index directly IS
+        the row/column for those. But a vertical border's own row range
+        (or a horizontal border's own column range) lives in the
+        CROSS-axis layers' stroke_runs instead, which nothing was
+        adjusting at all: a multi-row vertical border's run kept its
+        original origin/length completely unchanged after a row was
+        inserted within its own span, silently misaligning it with the
+        content that had actually shifted.
+        """
+        for layer_id in layer_ids:
+            layer = self.objects[layer_id.identifier]
+            for run in layer.stroke_runs:
+                if insert_at <= run.origin:
+                    run.origin += n
+                elif run.origin < insert_at <= run.origin + run.length:
+                    run.length += n
+                # else: insert_at > run.origin + run.length -- unaffected
+
+    def _shift_stroke_runs_on_delete(self, layer_ids, start: int, n: int) -> None:
+        """
+        The delete-side mirror of _shift_stroke_runs_on_insert -- see
+        that method's own docstring for which layers this applies to
+        and why. Handles a deleted range overlapping a run's own origin/
+        length in any of the ways that's possible: entirely before it
+        (shift back), entirely within it (shrink), overlapping only the
+        run's own start or end (clip to whatever survives), or entirely
+        containing the run (remove it -- nothing of it survives).
+        """
+        deleted_end = start + n
+        for layer_id in layer_ids:
+            layer = self.objects[layer_id.identifier]
+            for i in range(len(layer.stroke_runs) - 1, -1, -1):
+                run = layer.stroke_runs[i]
+                run_start = run.origin
+                run_end = run.origin + run.length
+                if deleted_end <= run_start:
+                    # Deleted range entirely before this run -- shift back.
+                    run.origin -= n
+                elif start >= run_end:
+                    # Deleted range entirely after this run -- unaffected.
+                    continue
+                elif start <= run_start and deleted_end >= run_end:
+                    # Deleted range entirely contains this run -- remove it.
+                    del layer.stroke_runs[i]
+                else:
+                    # Partial overlap -- clip origin/length to whatever
+                    # of the run's own span survives outside the deleted
+                    # range, then account for the rows/columns removed
+                    # before whatever's left.
+                    surviving_before = max(0, start - run_start)
+                    surviving_after = max(0, run_end - deleted_end)
+                    run.length = surviving_before + surviving_after
+                    if start <= run_start:
+                        run.origin = start
+                    # else run.origin (before the deleted range) is unchanged
+
+    def shift_stroke_rows(self, table_id: int, start_row: int, n_rows: int) -> None:
+        """
+        Shift every stroke layer's own row_column_index at or after
+        start_row by n_rows, on both the top-row and bottom-row stroke
+        layers -- the row-axis counterpart to what add_row() already
+        does for cell data (reassigning each Cell object's own .row).
+        Also adjusts left-column/right-column stroke layers' own
+        stroke_runs, whose origin/length represent a ROW range even
+        though those layers' own row_column_index is a column -- see
+        _shift_stroke_runs_on_insert's own docstring for why this
+        second part is needed too, confirmed as a separate, genuine
+        gap from the row_column_index one.
+
+        Confirmed directly this was previously missing entirely:
+        add_row() shifts cell values/styles correctly by moving Cell
+        objects and reassigning their own .row/.col, but the stroke
+        sidecar is a completely separate structure (keyed by its own
+        row_column_index, independent of any Cell object) that add_row()
+        never touched at all. The practical effect: a row's border stays
+        behind at its OLD physical row index after add_row() shifts its
+        content to a new one -- confirmed with a real, multi-row table
+        and a genuine save/reopen/insert/save cycle, not just an
+        in-memory check (the in-memory state can look deceptively
+        correct immediately after add_row(), before this asymmetry
+        between cell data and stroke data actually surfaces).
+        """
+        table_obj = self.objects[table_id]
+        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
+        if stroke_sidecar_id == 0:
+            return
+        sidecar_obj = self.objects[stroke_sidecar_id]
+        for layer_ids in (
+            sidecar_obj.top_row_stroke_layers,
+            sidecar_obj.bottom_row_stroke_layers,
+        ):
+            for layer_id in layer_ids:
+                layer = self.objects[layer_id.identifier]
+                if layer.row_column_index >= start_row:
+                    layer.row_column_index += n_rows
+        for layer_ids in (
+            sidecar_obj.left_column_stroke_layers,
+            sidecar_obj.right_column_stroke_layers,
+        ):
+            self._shift_stroke_runs_on_insert(layer_ids, start_row, n_rows)
+
+    def shift_stroke_rows_on_delete(self, table_id: int, start_row: int, n_rows: int) -> None:
+        """
+        The delete-side mirror of shift_stroke_rows -- see that
+        method's own docstring for the full reasoning; delete_row() has
+        the identical gap add_row() had, just in the opposite
+        direction: it correctly moves the remaining Cell objects'
+        own .row/.col up to close the gap, but never touched the stroke
+        sidecar, so a border at or after the deleted rows stayed behind
+        at its OLD row index rather than following its content up to
+        the new one. Confirmed directly, symmetrically to the insert
+        case.
+
+        A stroke layer whose own row_column_index falls WITHIN the
+        deleted range is removed outright -- the row it was on no
+        longer exists at all, so there's nothing left for it to
+        describe. A stroke layer after the deleted range has its
+        row_column_index decremented by n_rows, the same way add_row()
+        (via shift_stroke_rows) already increments one after an
+        insertion.
+        """
+        table_obj = self.objects[table_id]
+        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
+        if stroke_sidecar_id == 0:
+            return
+        sidecar_obj = self.objects[stroke_sidecar_id]
+        for layer_ids in (
+            sidecar_obj.top_row_stroke_layers,
+            sidecar_obj.bottom_row_stroke_layers,
+        ):
+            for i in range(len(layer_ids) - 1, -1, -1):
+                layer = self.objects[layer_ids[i].identifier]
+                if start_row <= layer.row_column_index < start_row + n_rows:
+                    del layer_ids[i]
+                elif layer.row_column_index >= start_row + n_rows:
+                    layer.row_column_index -= n_rows
+        for layer_ids in (
+            sidecar_obj.left_column_stroke_layers,
+            sidecar_obj.right_column_stroke_layers,
+        ):
+            self._shift_stroke_runs_on_delete(layer_ids, start_row, n_rows)
+
+    def shift_stroke_columns_on_delete(self, table_id: int, start_col: int, n_cols: int) -> None:
+        """
+        The column-axis mirror of shift_stroke_rows_on_delete -- see
+        that method's own docstring for the full reasoning.
+        """
+        table_obj = self.objects[table_id]
+        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
+        if stroke_sidecar_id == 0:
+            return
+        sidecar_obj = self.objects[stroke_sidecar_id]
+        for layer_ids in (
+            sidecar_obj.left_column_stroke_layers,
+            sidecar_obj.right_column_stroke_layers,
+        ):
+            for i in range(len(layer_ids) - 1, -1, -1):
+                layer = self.objects[layer_ids[i].identifier]
+                if start_col <= layer.row_column_index < start_col + n_cols:
+                    del layer_ids[i]
+                elif layer.row_column_index >= start_col + n_cols:
+                    layer.row_column_index -= n_cols
+        for layer_ids in (
+            sidecar_obj.top_row_stroke_layers,
+            sidecar_obj.bottom_row_stroke_layers,
+        ):
+            self._shift_stroke_runs_on_delete(layer_ids, start_col, n_cols)
+
+    def shift_stroke_columns(self, table_id: int, start_col: int, n_cols: int) -> None:
+        """
+        The column-axis mirror of shift_stroke_rows -- see that
+        method's own docstring for the full reasoning. Shifts every
+        stroke layer's own row_column_index at or after start_col by
+        n_cols, on both the left-column and right-column stroke layers.
+        Also adjusts top-row/bottom-row stroke layers' own stroke_runs,
+        whose origin/length represent a COLUMN range even though those
+        layers' own row_column_index is a row.
+        """
+        table_obj = self.objects[table_id]
+        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
+        if stroke_sidecar_id == 0:
+            return
+        sidecar_obj = self.objects[stroke_sidecar_id]
+        for layer_ids in (
+            sidecar_obj.left_column_stroke_layers,
+            sidecar_obj.right_column_stroke_layers,
+        ):
+            for layer_id in layer_ids:
+                layer = self.objects[layer_id.identifier]
+                if layer.row_column_index >= start_col:
+                    layer.row_column_index += n_cols
+        for layer_ids in (
+            sidecar_obj.top_row_stroke_layers,
+            sidecar_obj.bottom_row_stroke_layers,
+        ):
+            self._shift_stroke_runs_on_insert(layer_ids, start_col, n_cols)
 
     def create_stroke(self, origin: int, length: int, border_value: Border):
         line_cap = TSDArchives.StrokeArchive.LineCap.ButtCap

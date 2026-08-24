@@ -442,3 +442,110 @@ def test_add_bg_image(configurable_save_file):
     table = doc.sheets[0].tables[0]
     assert table.cell(0, 0).style.bg_image.filename == "cat.jpg"
     assert table.cell(0, 1).style.bg_image.filename == "cat.jpg"
+
+
+def test_unstyled_cell_inherits_table_default_inset(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+
+    table_model = doc._model.objects[table._table_id]
+    body_style = doc._model.objects[table_model.body_cell_style.identifier]
+    body_style.cell_properties.padding.left = 7.0
+    body_style.cell_properties.padding.top = 7.0
+    body_style.cell_properties.padding.right = 7.0
+    body_style.cell_properties.padding.bottom = 7.0
+    body_style.cell_properties.text_wrap = False
+
+    table.write(0, 0, "never explicitly styled")
+    assert table.cell(0, 0)._cell_style_id is None
+    doc.save(configurable_save_file)
+
+    saved_doc = Document(configurable_save_file)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    assert saved_cell._cell_style_id is None
+    assert saved_cell.style.text_inset == 7.0
+    assert saved_cell.style.text_wrap is False
+
+
+def test_unstyled_cell_inherits_table_default_vertical_alignment(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+
+    table_model = doc._model.objects[table._table_id]
+    body_style = doc._model.objects[table_model.body_cell_style.identifier]
+    body_style.cell_properties.vertical_alignment = 1  # kMiddle, not kTop
+
+    table.write(0, 0, "never explicitly styled")
+    assert table.cell(0, 0)._cell_style_id is None
+    doc.save(configurable_save_file)
+
+    saved_doc = Document(configurable_save_file)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    assert saved_cell._cell_style_id is None
+    assert saved_cell.style.alignment.vertical != "top"
+
+
+def test_unstyled_cell_inherits_table_default_bg_color(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+
+    table_model = doc._model.objects[table._table_id]
+    body_style = doc._model.objects[table_model.body_cell_style.identifier]
+    body_style.cell_properties.cell_fill.color.model = "rgb"
+    body_style.cell_properties.cell_fill.color.r = 0.2
+    body_style.cell_properties.cell_fill.color.g = 0.4
+    body_style.cell_properties.cell_fill.color.b = 0.6
+    body_style.cell_properties.cell_fill.color.a = 1.0
+    body_style.cell_properties.cell_fill.color.rgbspace = "srgb"
+
+    table.write(0, 0, "never explicitly styled")
+    assert table.cell(0, 0)._cell_style_id is None
+    doc.save(configurable_save_file)
+
+    saved_doc = Document(configurable_save_file)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    assert saved_cell._cell_style_id is None
+    assert saved_cell.style.bg_color is not None
+
+
+def test_style_mutation_after_reopen_persists(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    named_style = doc.add_style(name="Explicit Style", bold=True, font_size=14.0)
+    table.write(0, 0, "some text", style=named_style)
+    doc.save(configurable_save_file)
+
+    # Confirm this cell already has its own per-cell text style before the
+    # mutation below -- otherwise this wouldn't be testing a mutation of an
+    # *existing* style, per the bug this guards against.
+    reopened = Document(configurable_save_file)
+    cell = reopened.sheets[0].tables[0].cell(0, 0)
+    assert cell.style._text_style_obj_id is not None
+
+    cell.style.bold = False
+    cell.style.font_size = 18.0
+    reopened.save(configurable_save_file)
+
+    final = Document(configurable_save_file)
+    final_cell = final.sheets[0].tables[0].cell(0, 0)
+    assert final_cell.style.bold is False
+    assert final_cell.style.font_size == 18.0
+
+
+def test_unmutated_style_survives_readonly_resave(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(0, 0, "some text")
+    doc.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    table = reopened.sheets[0].tables[0]
+    cell = table.cell(0, 0)
+    original_font_name = cell.style.font_name
+    original_font_size = cell.style.font_size
+    reopened.save(configurable_save_file)
+
+    final = Document(configurable_save_file)
+    final_cell = final.sheets[0].tables[0].cell(0, 0)
+    assert final_cell.style.font_name == original_font_name
+    assert final_cell.style.font_size == original_font_size

@@ -312,7 +312,7 @@ class Style:
     @classmethod
     def from_storage(cls, cell: object, model: object):
         bg_image = BackgroundImage(*cell._image_data) if cell._image_data is not None else None
-        return Style(
+        style = Style(
             alignment=model.cell_alignment(cell),
             bg_image=bg_image,
             bg_color=model.cell_bg_color(cell),
@@ -332,6 +332,11 @@ class Style:
             _text_style_obj_id=model.text_style_object_id(cell),
             _cell_style_obj_id=model.cell_style_object_id(cell),
         )
+        # Constructing a Style always marks it as modified (see __setattr__
+        # below) even though this one merely reflects existing storage.
+        style.__dict__["_update_text_style"] = False
+        style.__dict__["_update_cell_style"] = False
+        return style
 
     def __post_init__(self):
         self.bg_color = rgb_color(self.bg_color)

@@ -1129,6 +1129,8 @@ class Table(Cacheable):
             )
         self._data[start_row:start_row] = rows
 
+        self._model.shift_stroke_rows(self._table_id, start_row, num_rows)
+
         for row in range(start_row, self.num_rows):
             for col in range(self.num_cols):
                 self._data[row][col].row = row
@@ -1183,6 +1185,8 @@ class Table(Cacheable):
         self.num_cols += num_cols
         self._model.number_of_columns(self._table_id, self.num_cols)
 
+        self._model.shift_stroke_columns(self._table_id, start_col, num_cols)
+
         for row in range(self.num_rows):
             cols = [
                 Cell._empty_cell(self._table_id, row, start_col + col, self._model)
@@ -1230,9 +1234,13 @@ class Table(Cacheable):
             raise IndexError(msg)
 
         if start_row is not None:
+            effective_start_row = start_row
             del self._data[start_row : start_row + num_rows]
         else:
+            effective_start_row = self.num_rows - num_rows
             del self._data[-num_rows:]
+
+        self._model.shift_stroke_rows_on_delete(self._table_id, effective_start_row, num_rows)
 
         self.num_rows -= num_rows
         self._model.number_of_rows(self._table_id, self.num_rows)
@@ -1269,6 +1277,8 @@ class Table(Cacheable):
             msg = "Column number not in range for table"
             raise IndexError(msg)
 
+        effective_start_col = start_col if start_col is not None else self.num_cols - num_cols
+
         for row in range(self.num_rows):
             if start_col is not None:
                 del self._data[row][start_col : start_col + num_cols]
@@ -1276,6 +1286,8 @@ class Table(Cacheable):
                 del self._data[row][-num_cols:]
             for col in range(len(self._data[row])):
                 self._data[row][col].col = col
+
+        self._model.shift_stroke_columns_on_delete(self._table_id, effective_start_col, num_cols)
 
         self.num_cols -= num_cols
         self._model.number_of_columns(self._table_id, self.num_cols)
