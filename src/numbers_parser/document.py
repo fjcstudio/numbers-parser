@@ -1116,6 +1116,15 @@ class Table(Cacheable):
 
         if start_row is None:
             start_row = self.num_rows
+
+        # Populate every cell's own _border from the sidecar BEFORE
+        # anything shifts -- propagate_borders_into_inserted_rows below
+        # needs the true, current per-cell border state to compare
+        # against, and the sidecar's own row_column_index/stroke_run
+        # coordinates are only valid against the CURRENT (pre-insertion)
+        # data layout, not the post-insertion one.
+        self._model.extract_strokes(self._table_id)
+
         self.num_rows += num_rows
         self._model.number_of_rows(self._table_id, self.num_rows)
 
@@ -1130,6 +1139,9 @@ class Table(Cacheable):
         self._data[start_row:start_row] = rows
 
         self._model.shift_stroke_rows(self._table_id, start_row, num_rows)
+        self._model.propagate_borders_into_inserted_rows(
+            self._table_id, self._data, start_row, num_rows,
+        )
 
         for row in range(start_row, self.num_rows):
             for col in range(self.num_cols):
@@ -1182,6 +1194,10 @@ class Table(Cacheable):
 
         if start_col is None:
             start_col = self.num_cols
+
+        # See the identical comment in add_row() above.
+        self._model.extract_strokes(self._table_id)
+
         self.num_cols += num_cols
         self._model.number_of_columns(self._table_id, self.num_cols)
 
@@ -1200,6 +1216,10 @@ class Table(Cacheable):
             if default is not None:
                 for col in range(start_col, start_col + num_cols):
                     self.write(row, col, default)
+
+        self._model.propagate_borders_into_inserted_columns(
+            self._table_id, self._data, start_col, num_cols,
+        )
 
     def delete_row(
         self,

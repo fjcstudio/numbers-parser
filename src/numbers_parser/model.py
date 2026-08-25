@@ -2729,6 +2729,76 @@ class _NumbersModel(Cacheable):
         ):
             self._shift_stroke_runs_on_insert(layer_ids, start_col, n_cols)
 
+    def propagate_borders_into_inserted_rows(
+        self,
+        table_id: int,
+        data: list,
+        start_row: int,
+        n_rows: int,
+    ) -> None:
+        """
+        Confirmed directly: the stroke sidecar's own layers (read by
+        extract_strokes(), which add_row()/add_column() now call before
+        touching self._data at all) are only ever POPULATED by
+        update_cell_borders() at SAVE time -- in-memory, before any save,
+        they're simply empty, even right after set_cell_border() has been
+        called. So there is nothing in the sidecar itself to read back
+        from immediately after an insertion that happens in the same
+        session a border was set in, before either has ever been saved.
+        An earlier version of this fix tried reading the sidecar
+        directly for exactly this reason and found it empty every time
+        in the single-session case -- see git history for that
+        abandoned attempt if useful context.
+
+        The one thing that IS always populated immediately, regardless
+        of a prior save, is each Cell's own _border attribute --
+        set_cell_border() sets it directly, and it's what
+        update_cell_borders()'s own save-time rebuild scans to
+        reconstruct runs in the first place (see that method's own
+        docstring): consecutive rows with an identical border value on
+        a given side. That's the actual, general rule this needs to
+        satisfy, not a proxy for the sidecar's own arithmetic -- so this
+        checks it directly: if the row immediately before the inserted
+        block and the row immediately after it (both real, untouched by
+        the insertion) already agree on a border value, extend that
+        value across the newly-inserted, otherwise border-less rows too,
+        via set_cell_border() itself for the same mirroring/bookkeeping
+        reasons given above.
+        """
+        if start_row == 0 or start_row + n_rows >= len(data):
+            return
+        before_row = data[start_row - 1]
+        after_row = data[start_row + n_rows]
+        for col in range(min(len(before_row), len(after_row))):
+            for side in ("left", "right"):
+                before_val = getattr(before_row[col]._border, side)
+                after_val = getattr(after_row[col]._border, side)
+                if before_val is not None and before_val == after_val:
+                    for r in range(start_row, start_row + n_rows):
+                        self.set_cell_border(table_id, r, col, side, before_val)
+
+    def propagate_borders_into_inserted_columns(
+        self,
+        table_id: int,
+        data: list,
+        start_col: int,
+        n_cols: int,
+    ) -> None:
+        """
+        The column-axis mirror of propagate_borders_into_inserted_rows --
+        see that method's own docstring for the full reasoning.
+        """
+        if start_col == 0 or start_col + n_cols >= len(data[0]):
+            return
+        after_col = start_col + n_cols
+        for row_index, row in enumerate(data):
+            for side in ("top", "bottom"):
+                before_val = getattr(row[start_col - 1]._border, side)
+                after_val = getattr(row[after_col]._border, side)
+                if before_val is not None and before_val == after_val:
+                    for c in range(start_col, after_col):
+                        self.set_cell_border(table_id, row_index, c, side, before_val)
+
     def create_stroke(self, origin: int, length: int, border_value: Border):
         line_cap = TSDArchives.StrokeArchive.LineCap.ButtCap
         line_join = TSDArchives.LineJoin.MiterJoin

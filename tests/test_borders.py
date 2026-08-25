@@ -729,3 +729,96 @@ def test_multicolumn_horizontal_border_grows_on_column_insert_within_span(config
     table3 = doc3.sheets[0].tables[0]
     bordered = [c for c in range(table3.num_cols) if table3.cell(2, c).border.top is not None]
     assert bordered == [3, 4, 5, 6]
+
+
+def test_multirow_vertical_border_grows_on_row_insert_within_span_single_session(
+    configurable_save_file,
+):
+    """The single-session mirror of
+    test_multirow_vertical_border_grows_on_row_insert_within_span --
+    no save/reopen between setting the border and inserting into its
+    span. Previously failed silently: shift_stroke_rows() only touches
+    the stroke sidecar, which is empty until the next save, so nothing
+    propagated the border onto the newly-inserted row until this fix's
+    propagate_borders_into_inserted_rows() started comparing the
+    span's own boundary cells directly."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 10:
+        table.add_row()
+    table.set_cell_border(3, 2, "left", border, 3)  # rows 3-5
+    table.add_row(1, start_row=4)  # within the border's own row range, same session
+
+    bordered = [r for r in range(table.num_rows) if table.cell(r, 2).border.left is not None]
+    assert bordered == [3, 4, 5, 6]
+
+    # Confirm it also survives a save/reopen once materialised this way.
+    doc.save(configurable_save_file)
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    bordered2 = [r for r in range(table2.num_rows) if table2.cell(r, 2).border.left is not None]
+    assert bordered2 == [3, 4, 5, 6]
+
+
+def test_multicolumn_horizontal_border_grows_on_column_insert_within_span_single_session(
+    configurable_save_file,
+):
+    """The column-axis mirror of
+    test_multirow_vertical_border_grows_on_row_insert_within_span_single_session."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_cols < 10:
+        table.add_column()
+    table.set_cell_border(2, 3, "top", border, 3)  # columns 3-5
+    table.add_column(1, start_col=4)  # within the border's own column range, same session
+
+    bordered = [c for c in range(table.num_cols) if table.cell(2, c).border.top is not None]
+    assert bordered == [3, 4, 5, 6]
+
+    doc.save(configurable_save_file)
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    bordered2 = [c for c in range(table2.num_cols) if table2.cell(2, c).border.top is not None]
+    assert bordered2 == [3, 4, 5, 6]
+
+
+def test_border_shift_before_span_still_correct_single_session(configurable_save_file):
+    """Guards against a regression in the opposite direction: an
+    insertion entirely BEFORE a border's own span, in a single
+    session, should still just shift the whole span uniformly -- not
+    accidentally grow it or duplicate it -- now that
+    propagate_borders_into_inserted_rows() runs on every add_row()
+    call, not just ones that land inside an existing span."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 10:
+        table.add_row()
+    table.set_cell_border(4, 2, "left", border, 2)  # rows 4-5
+    table.add_row(1, start_row=1)  # before the span, same session
+
+    bordered = [r for r in range(table.num_rows) if table.cell(r, 2).border.left is not None]
+    assert bordered == [5, 6]
+
+
+def test_border_delete_within_span_still_correct_single_session(configurable_save_file):
+    """Guards against a regression from this fix in the delete
+    direction: deleting a row from within an existing span, in a
+    single session, should shrink the span rather than leaving a
+    duplicated or dangling entry behind."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows < 10:
+        table.add_row()
+    table.set_cell_border(2, 2, "left", border, 3)  # rows 2-4
+    table.delete_row(1, start_row=3)  # middle row of the span, same session
+
+    bordered = [r for r in range(table.num_rows) if table.cell(r, 2).border.left is not None]
+    assert bordered == [2, 3]
