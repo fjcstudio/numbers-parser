@@ -29,9 +29,8 @@ class _PrecStr(str):
 
 # Lower binds looser, matching standard spreadsheet operator
 # precedence: comparisons loosest, then concatenation, then addition/
-# subtraction, then multiplication/division and unary minus (sharing
-# a tier: -A×B and A×-B are both unambiguous without parentheses,
-# same convention Excel and Numbers use), then exponentiation.
+# subtraction, then multiplication/division/unary-minus/percent
+# (sharing a tier -- see _SCALING_OPS below), then exponentiation.
 _PRECEDENCE = {
     "equals": 1,
     "not_equals": 1,
@@ -45,8 +44,28 @@ _PRECEDENCE = {
     "mul": 4,
     "div": 4,
     "negate": 4,
+    "percent": 4,
     "power": 6,
 }
+
+# mul, div, negate, and percent are all pure scaling operations (multiply
+# by a constant), which is why they share one precedence tier above: any
+# one of them commutes exactly with any other, e.g. -(A*B) == (-A)*B ==
+# A*(-B), and (A+B)/100 has no equivalent shortcut through percent, but
+# (A*B)% == A*(B%) does -- confirmed by direct calculation, not assumed.
+# That means negate()/percent()'s own operand never needs parentheses
+# when it comes from this same family, but DOES need them from any other
+# operator, INCLUDING power -- despite power's _PRECEDENCE value being
+# numerically higher. Real spreadsheet precedence (confirmed against
+# Excel's own documented operator precedence) actually ranks unary minus
+# and percent tighter than exponentiation (-2^2 is 4 in Excel, not -4,
+# the well-known inverse-of-plain-math-convention spreadsheet quirk) --
+# but negate/percent can't simply be given a higher numeric tier than
+# power, because that would also make them wrongly start
+# parenthesising a same-family mul/div operand. So negate() and
+# percent() use their own "is this the same family, or atomic" check
+# (_wrap_unary below) instead of the generic magnitude-based
+# _wrap_left/_wrap_right every other operator uses.
 
 # Operators where a child at the SAME precedence can be flattened on
 # the right without parentheses, confirmed by direct calculation
@@ -74,6 +93,20 @@ def _wrap_right(operand, parent_op: str) -> str:
     p = _prec(operand)
     parent_p = _PRECEDENCE[parent_op]
     if p < parent_p or (p == parent_p and parent_op not in _RIGHT_ASSOC_SAFE):
+        return f"({operand})"
+    return str(operand)
+
+
+def _wrap_unary(operand, own_precedence: int) -> str:
+    """
+    Wrap negate()/percent()'s own operand, unless it's atomic or from
+    the same scaling-operator family (see _PRECEDENCE's own comment
+    above) -- a plain magnitude comparison against own_precedence isn't
+    enough here, since power's numeric tier is higher than negate's/
+    percent's despite needing parentheses.
+    """
+    p = _prec(operand)
+    if p != _ATOM_PRECEDENCE and p != own_precedence:
         return f"({operand})"
     return str(operand)
 
@@ -225,10 +258,7 @@ class Formula(list):
 
     def negate(self, *args) -> None:
         arg1 = self.pop()
-        if _prec(arg1) < _PRECEDENCE["negate"]:
-            text = f"-({arg1})"
-        else:
-            text = f"-{arg1}"
+        text = f"-{_wrap_unary(arg1, _PRECEDENCE['negate'])}"
         self.push(_PrecStr(text, _PRECEDENCE["negate"]))
 
     def not_equals(self, *args) -> None:
@@ -246,7 +276,8 @@ class Formula(list):
 
     def percent(self, *args) -> None:
         arg1 = self.pop()
-        self.push(f"{arg1}%")
+        text = f"{_wrap_unary(arg1, _PRECEDENCE['percent'])}%"
+        self.push(_PrecStr(text, _PRECEDENCE["percent"]))
 
     def power(self, *args) -> None:
         arg2, arg1 = self.popn(2)
