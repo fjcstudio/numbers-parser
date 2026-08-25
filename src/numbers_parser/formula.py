@@ -8,6 +8,76 @@ from numbers_parser.generated.functionmap import FUNCTION_MAP
 
 FUNCTION_NAME_TO_ID = {v: k for k, v in FUNCTION_MAP.items()}
 
+_ATOM_PRECEDENCE = 99
+
+
+class _PrecStr(str):
+    """
+    A rendered sub-expression tagged with the precedence of its own
+    outermost operator, so an enclosing operator can decide whether it
+    needs to be wrapped in parentheses to preserve the original
+    grouping. Plain strings (cell references, numbers, function
+    calls, ranges) are left untagged and treated as atomic: they never
+    need parentheses under any enclosing operator.
+    """
+
+    def __new__(cls, value, precedence):
+        obj = str.__new__(cls, value)
+        obj.precedence = precedence
+        return obj
+
+
+# Lower binds looser, matching standard spreadsheet operator
+# precedence: comparisons loosest, then concatenation, then addition/
+# subtraction, then multiplication/division and unary minus (sharing
+# a tier: -A×B and A×-B are both unambiguous without parentheses,
+# same convention Excel and Numbers use), then exponentiation.
+_PRECEDENCE = {
+    "equals": 1,
+    "not_equals": 1,
+    "greater_than": 1,
+    "greater_than_or_equal": 1,
+    "less_than": 1,
+    "less_than_or_equal": 1,
+    "concat": 2,
+    "add": 3,
+    "sub": 3,
+    "mul": 4,
+    "div": 4,
+    "negate": 4,
+    "power": 6,
+}
+
+# Operators where a child at the SAME precedence can be flattened on
+# the right without parentheses, confirmed by direct calculation
+# rather than assumed: (A op B) op C == A op (B op C) for these three
+# (string concatenation, and addition/multiplication chains where
+# subtraction/division are just addition/multiplication by an
+# inverse). sub and div are deliberately excluded: A-(B-C) != A-B-C,
+# and A/(B/C) != A/B/C, so a same-precedence child on the right of
+# those two always needs parentheses to preserve the original
+# grouping.
+_RIGHT_ASSOC_SAFE = {"add", "mul", "concat"}
+
+
+def _prec(operand) -> int:
+    return getattr(operand, "precedence", _ATOM_PRECEDENCE)
+
+
+def _wrap_left(operand, parent_op: str) -> str:
+    if _prec(operand) < _PRECEDENCE[parent_op]:
+        return f"({operand})"
+    return str(operand)
+
+
+def _wrap_right(operand, parent_op: str) -> str:
+    p = _prec(operand)
+    parent_p = _PRECEDENCE[parent_op]
+    if p < parent_p or (p == parent_p and parent_op not in _RIGHT_ASSOC_SAFE):
+        return f"({operand})"
+    return str(operand)
+
+
 
 class Formula(list):
     def __init__(self, model, table_id, row, col) -> None:
@@ -34,7 +104,8 @@ class Formula(list):
 
     def add(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}+{arg2}")
+        text = f"{_wrap_left(arg1, 'add')}+{_wrap_right(arg2, 'add')}"
+        self.push(_PrecStr(text, _PRECEDENCE["add"]))
 
     def array(self, *args) -> None:
         node = args[2]
@@ -64,7 +135,8 @@ class Formula(list):
 
     def concat(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}&{arg2}")
+        text = f"{_wrap_left(arg1, 'concat')}&{_wrap_right(arg2, 'concat')}"
+        self.push(_PrecStr(text, _PRECEDENCE["concat"]))
 
     def date(self, *args) -> None:
         # Date literals exported as DATE()
@@ -74,7 +146,8 @@ class Formula(list):
 
     def div(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}÷{arg2}")
+        text = f"{_wrap_left(arg1, 'div')}÷{_wrap_right(arg2, 'div')}"
+        self.push(_PrecStr(text, _PRECEDENCE["div"]))
 
     def empty(self, *args) -> None:
         self.push("")
@@ -82,7 +155,8 @@ class Formula(list):
     def equals(self, *args) -> None:
         # Arguments appear to be reversed
         arg1, arg2 = self.popn(2)
-        self.push(f"{arg2}={arg1}")
+        text = f"{_wrap_left(arg2, 'equals')}={_wrap_right(arg1, 'equals')}"
+        self.push(_PrecStr(text, _PRECEDENCE["equals"]))
 
     def function(self, *args) -> None:
         node = args[2]
@@ -114,19 +188,29 @@ class Formula(list):
 
     def greater_than(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}>{arg2}")
+        text = f"{_wrap_left(arg1, 'greater_than')}>{_wrap_right(arg2, 'greater_than')}"
+        self.push(_PrecStr(text, _PRECEDENCE["greater_than"]))
 
     def greater_than_or_equal(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}≥{arg2}")
+        text = (
+            f"{_wrap_left(arg1, 'greater_than_or_equal')}"
+            f"≥{_wrap_right(arg2, 'greater_than_or_equal')}"
+        )
+        self.push(_PrecStr(text, _PRECEDENCE["greater_than_or_equal"]))
 
     def less_than(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}<{arg2}")
+        text = f"{_wrap_left(arg1, 'less_than')}<{_wrap_right(arg2, 'less_than')}"
+        self.push(_PrecStr(text, _PRECEDENCE["less_than"]))
 
     def less_than_or_equal(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}≤{arg2}")
+        text = (
+            f"{_wrap_left(arg1, 'less_than_or_equal')}"
+            f"≤{_wrap_right(arg2, 'less_than_or_equal')}"
+        )
+        self.push(_PrecStr(text, _PRECEDENCE["less_than_or_equal"]))
 
     def list(self, *args) -> None:
         node = args[2]
@@ -136,15 +220,21 @@ class Formula(list):
 
     def mul(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}×{arg2}")
+        text = f"{_wrap_left(arg1, 'mul')}×{_wrap_right(arg2, 'mul')}"
+        self.push(_PrecStr(text, _PRECEDENCE["mul"]))
 
     def negate(self, *args) -> None:
         arg1 = self.pop()
-        self.push(f"-{arg1}")
+        if _prec(arg1) < _PRECEDENCE["negate"]:
+            text = f"-({arg1})"
+        else:
+            text = f"-{arg1}"
+        self.push(_PrecStr(text, _PRECEDENCE["negate"]))
 
     def not_equals(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}≠{arg2}")
+        text = f"{_wrap_left(arg1, 'not_equals')}≠{_wrap_right(arg2, 'not_equals')}"
+        self.push(_PrecStr(text, _PRECEDENCE["not_equals"]))
 
     def number(self, *args) -> None:
         node = args[2]
@@ -160,7 +250,8 @@ class Formula(list):
 
     def power(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}^{arg2}")
+        text = f"{_wrap_left(arg1, 'power')}^{_wrap_right(arg2, 'power')}"
+        self.push(_PrecStr(text, _PRECEDENCE["power"]))
 
     def range(self, *args) -> None:
         arg2, arg1 = [str(x) for x in self.popn(2)]
@@ -182,7 +273,8 @@ class Formula(list):
 
     def sub(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        self.push(f"{arg1}-{arg2}")
+        text = f"{_wrap_left(arg1, 'sub')}-{_wrap_right(arg2, 'sub')}"
+        self.push(_PrecStr(text, _PRECEDENCE["sub"]))
 
     def xref(self, *args) -> None:
         (row, col, node) = args

@@ -22,7 +22,7 @@ def enable_experimental_feature(flags: ExperimentalFeatures) -> None:
 
 def disable_experimental_feature(flags: ExperimentalFeatures) -> None:
     global EXPERIMENTAL_FEATURES
-    EXPERIMENTAL_FEATURES ^= flags
+    EXPERIMENTAL_FEATURES &= ~flags
     debug("Experimental features: disabling %s, flags=%s", flags, EXPERIMENTAL_FEATURES)
 
 

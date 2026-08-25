@@ -4,7 +4,7 @@ import logging
 import math
 import re
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from fractions import Fraction
 from hashlib import sha1
@@ -1035,7 +1035,11 @@ class Cell(CellStorageFlags, Cacheable):
             if self._value.tzinfo is None:
                 date_delta = self._value - EPOCH
             else:
-                date_delta = self._value - EPOCH.astimezone(self._value.tzinfo)
+                # EPOCH is naive; astimezone() would wrongly presume it means
+                # local time rather than UTC, shifting the result by the
+                # local UTC offset. Apple's reference date is UTC, so anchor
+                # it explicitly before taking the elapsed-time difference.
+                date_delta = self._value - EPOCH.replace(tzinfo=timezone.utc)
             value = pack("<d", float(date_delta.total_seconds()))
         elif isinstance(self, BoolCell):
             flags = 2
