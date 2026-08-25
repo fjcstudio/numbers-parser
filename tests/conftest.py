@@ -1,5 +1,7 @@
 import pytest
 
+import numbers_parser.experimental as experimental
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -27,6 +29,13 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "experimental" in item.keywords:
                 item.add_marker(run_experimental)
+
+
+@pytest.fixture(autouse=True)
+def _reset_experimental_features():
+    original = experimental.EXPERIMENTAL_FEATURES
+    yield
+    experimental.EXPERIMENTAL_FEATURES = original
 
 
 @pytest.fixture(name="configurable_save_file")
