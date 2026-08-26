@@ -1,4 +1,4 @@
-from numbers_parser import Document
+from numbers_parser import Document, MergedCell
 
 XXX_TABLE_1_REF = [
     ["XXX_COL_1", "XXX_COL_2", "XXX_COL_3", "XXX_COL_4", "XXX_COL_5"],
@@ -77,3 +77,47 @@ def test_all_merged_ranges():
     assert table.merge_ranges == ["A2:B2", "B5:E5", "B6:B8", "C4:E4", "D7:E8"]
     table = sheets[1].tables[0]
     assert table.merge_ranges == ["A1:B1", "B4:C5"]
+
+
+def test_wide_merge_on_a_table_with_fewer_rows_than_merged_columns(configurable_save_file):
+    # recalculate_row_headers() previously computed a row's own cell count
+    # as len(data) (the table's ROW count) minus that row's merged-cell
+    # count, instead of len(cells) (that row's own COLUMN count) minus it
+    # -- a copy/paste mistake against the correct pattern already used by
+    # recalculate_column_headers(). A hard ValueError ("Value out of
+    # range") from the protobuf's `required uint32 numberOfCells` field
+    # once a row's merged-cell count exceeds the table's own row count,
+    # since the (buggy) subtraction goes negative.
+    #
+    # The crash only appears on a SECOND save: table.merge_cells() only
+    # marks a range for merging -- the affected cells don't actually
+    # become MergedCell instances in memory until the document is
+    # reopened (merge geometry is applied on the read path, in
+    # Cell._set_merge()). So the first save writes a silently-wrong (but
+    # non-negative) numberOfCells; only a save of an already-reopened
+    # document, where the merged cells are genuinely MergedCell, can
+    # drive the subtraction negative. Confirmed as the same shape of bug
+    # that broke tests/data/issue-102-v14.4.numbers/
+    # issue-102-v15.1.numbers on save (both real files being resaved,
+    # i.e. already past their own first save).
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    while table.num_rows > 2:
+        table.delete_row()
+    assert table.num_rows == 2
+    assert table.num_cols == 8
+
+    table.merge_cells("A1:H1")
+    doc.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    reopened_table = reopened.sheets[0].tables[0]
+    assert reopened_table.merge_ranges == ["A1:H1"]
+    for col in range(1, 8):
+        assert isinstance(reopened_table.cell(0, col), MergedCell)
+
+    reopened.save(configurable_save_file)
+
+    resaved = Document(configurable_save_file)
+    resaved_table = resaved.sheets[0].tables[0]
+    assert resaved_table.merge_ranges == ["A1:H1"]

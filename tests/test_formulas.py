@@ -1,7 +1,12 @@
 import pytest
 import pytest_check as check
 
-from numbers_parser import Document, UnsupportedWarning
+from numbers_parser import Document, ErrorCell, UnsupportedWarning
+from numbers_parser.constants import OwnerKind
+from numbers_parser.generated import TSCEArchives_pb2 as TSCEArchives
+from numbers_parser.numbers_uuid import NumbersUUID
+
+_CELL_REFERENCE_NODE = 36
 
 TABLE_1_FORMULAS = [
     [None, "A1", "$B$1=1"],
@@ -104,6 +109,76 @@ def test_exceptions(configurable_save_file):
         _ = doc.sheets[0].tables[0].cell(0, 1).formula
 
     assert str(record[0].message) == "Table 1@[0,1]: key #999 not found"
+
+
+def test_error_cell_formula_survives_save(configurable_save_file):
+    doc = Document("tests/data/issue-42.numbers")
+    table = doc.sheets[0].tables[0]
+
+    error_cells = [
+        (row, col)
+        for row in range(table.num_rows)
+        for col in range(table.num_cols)
+        if isinstance(table.cell(row, col), ErrorCell)
+    ]
+    assert len(error_cells) > 0
+    for row, col in error_cells:
+        assert table.cell(row, col).is_formula
+
+    doc.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    reopened_table = reopened.sheets[0].tables[0]
+    for row, col in error_cells:
+        cell = reopened_table.cell(row, col)
+        assert isinstance(cell, ErrorCell), f"cell({row},{col}) became {type(cell).__name__}"
+        assert cell.is_formula
+
+
+def test_cross_table_reference_resolves_via_table_model_owner():
+    # Every table this library creates gets TWO FormulaOwnerDependenciesArchive
+    # records: a HAUNTED_OWNER (the only one table_uuids_to_id() used to check)
+    # and a TABLE_MODEL owner with its own, independent UUID pointing at the
+    # same table via a TableInfoArchive. Confirmed empirically that Numbers.app
+    # can embed either UUID in a cross-table reference's own AST -- this builds
+    # a reference using the second, previously-unresolvable one directly, since
+    # doing so needs no real Numbers.app-authored fixture: the TABLE_MODEL
+    # owner already exists in any in-memory Document()'s own object graph.
+    doc = Document()
+    doc.add_sheet("Sheet 2", "Table B")
+    table_a = doc.sheets[0].tables[0]
+    table_b = doc.sheets["Sheet 2"].tables["Table B"]
+    model = table_a._model
+
+    table_b_info_id = model.table_info_id(table_b._table_id)
+    table_model_owner_ids = [
+        obj_id
+        for obj_id in model.find_refs("FormulaOwnerDependenciesArchive")
+        if model.objects[obj_id].owner_kind == OwnerKind.TABLE_MODEL
+        and model.objects[obj_id].formula_owner.identifier == table_b_info_id
+    ]
+    assert len(table_model_owner_ids) == 1
+    table_model_owner = model.objects[table_model_owner_ids[0]]
+
+    ref_node = TSCEArchives.ASTNodeArrayArchive.ASTNodeArchive()
+    ref_node.AST_node_type = _CELL_REFERENCE_NODE
+    ref_node.AST_row.row = 0
+    ref_node.AST_row.absolute = True
+    ref_node.AST_column.column = 0
+    ref_node.AST_column.absolute = True
+    ref_node.AST_cross_table_reference_extra_info.table_id.CopyFrom(
+        NumbersUUID(table_model_owner.formula_owner_uid).protobuf4,
+    )
+
+    aa = TSCEArchives.ASTNodeArrayArchive()
+    aa.AST_node.append(ref_node)
+    fa = TSCEArchives.FormulaArchive()
+    fa.AST_node_array.CopyFrom(aa)
+    key = model._formulas.lookup_key(table_a._table_id, fa)
+    table_a.write(1, 0, 0.0)
+    table_a.cell(1, 0)._formula_id = key
+
+    assert table_a.cell(1, 0).formula == "Table B::$A$1"
 
 
 def test_named_ranges():
