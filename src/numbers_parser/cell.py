@@ -1057,6 +1057,25 @@ class Cell(CellStorageFlags, Cacheable):
             value = b""
         elif isinstance(self, MergedCell):
             return None
+        elif isinstance(self, ErrorCell):
+            # A formula's cached error result carries no value payload of
+            # its own (confirmed against real Numbers.app output: a
+            # formulaErrorCellType cell has no d128/double/etc. bytes,
+            # just the formula_id set below via the shared flags block).
+            # Previously this fell through to the catch-all "unsupported
+            # data type" branch and returned None, which silently dropped
+            # the cell (and its formula) from the saved file entirely --
+            # confirmed directly: a zero-modification load-then-save of a
+            # document containing a cached-error cross-table formula
+            # dropped that formula's is_formula flag on reread, while an
+            # adjacent already-resolved formula in the same table survived
+            # unchanged. Any file read into this library that happens to
+            # have a cached calculation error on a formula cell hit this
+            # on every save, independent of anything related to
+            # cross-table references specifically.
+            flags = 0
+            cell_type = TSTArchives.formulaErrorCellType
+            value = b""
         elif isinstance(self, RichTextCell):
             flags = 0
             length += 4
