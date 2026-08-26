@@ -804,6 +804,39 @@ class _NumbersModel(Cacheable):
             uuid_to_hex(self.objects[obj_id].base_owner_uid): obj_id for obj_id in haunted_owner_ids
         }
 
+        # In addition to the haunted-owner base UUID above, some cross-table
+        # references (observed empirically against real Numbers.app output)
+        # are keyed by a *different*, auxiliary TABLE_MODEL owner's own
+        # formula_owner_uid rather than the haunted-owner base UUID. This
+        # auxiliary owner shares the same underlying table (via its
+        # formula_owner reference to that table's TableInfoArchive) but
+        # lives in an unrelated UUID family. Index every such UUID per
+        # table so table_uuids_to_id() can resolve either form.
+        self._table_id_to_extra_owner_uuids = {}
+        table_model_owner_ids = [
+            obj_id
+            for obj_id in self.find_refs("FormulaOwnerDependenciesArchive")
+            if self.objects[obj_id].owner_kind == OwnerKind.TABLE_MODEL
+        ]
+        for obj_id in table_model_owner_ids:
+            fod = self.objects[obj_id]
+            if not fod.HasField("formula_owner"):
+                continue
+            owner_ref_id = fod.formula_owner.identifier
+            if owner_ref_id not in self.objects:
+                continue
+            owner_obj = self.objects[owner_ref_id]
+            if not owner_obj.HasField("tableModel"):
+                # Only a TableInfoArchive-wrapped owner is a real,
+                # observed shape (see add_formula_owner()'s own
+                # TABLE_MODEL-kind owner, which always points at a
+                # TableInfoArchive) -- nothing else resolves to a table.
+                continue
+            resolved_table_id = owner_obj.tableModel.identifier
+            self._table_id_to_extra_owner_uuids.setdefault(resolved_table_id, set()).add(
+                uuid_to_hex(fod.formula_owner_uid),
+            )
+
     @cache()
     def table_base_id(self, table_id: int) -> int:
         """ "Finds the UUID of a table."""
@@ -955,6 +988,7 @@ class _NumbersModel(Cacheable):
                 for sheet_id in self.sheet_ids()
                 for table_id in self.table_ids(sheet_id)
                 if table_uuid == self.table_base_id(table_id)
+                or table_uuid in getattr(self, "_table_id_to_extra_owner_uuids", {}).get(table_id, set())
             ),
             None,
         )
