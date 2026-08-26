@@ -1140,7 +1140,7 @@ class _NumbersModel(Cacheable):
         clear_field_container(buckets.headers)
 
         for row, cells in enumerate(data):
-            num_cols = len(data) - sum([isinstance(x, MergedCell) for x in cells])
+            num_cols = len(cells) - sum([isinstance(x, MergedCell) for x in cells])
             height = current_row_heights[row]
             header = TSTArchives.HeaderStorageBucket.Header(
                 index=row,
