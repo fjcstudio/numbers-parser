@@ -81,7 +81,7 @@ from numbers_parser.generated.TSWPArchives_pb2 import (
 )
 from numbers_parser.iwafile import find_extension
 from numbers_parser.numbers_cache import Cacheable, cache
-from numbers_parser.numbers_uuid import NumbersUUID, uuid_to_hex
+from numbers_parser.numbers_uuid import NumbersUUID, derive_table_identity_uuid, uuid_to_hex
 from numbers_parser.xrefs import CellRange, ScopedNameRefCache
 
 logger = logging.getLogger(__name__)
@@ -1478,10 +1478,16 @@ class _NumbersModel(Cacheable):
 
         # Build a minimal table duplicating references from the source table
         from_table_refs = field_references(from_table)
+        # This table's own persistent identity. Numbers.app's kind-1
+        # (TABLE_MODEL) trust check reads this exact value back (see
+        # add_formula_owner()/derive_table_identity_uuid()) -- minted once,
+        # here, and threaded through rather than re-derived or re-minted
+        # anywhere else.
+        table_id_uuid = NumbersUUID()
         table_model_id, table_model = self.objects.create_object_from_dict(
             "CalculationEngine",
             {
-                "table_id": str(NumbersUUID()).upper(),
+                "table_id": str(table_id_uuid).upper(),
                 "number_of_rows": num_rows,
                 "number_of_columns": num_cols,
                 "table_name": table_name,
@@ -1592,6 +1598,7 @@ class _NumbersModel(Cacheable):
 
         haunted_owner_uuid = self.add_formula_owner(
             table_info_id,
+            table_id_uuid,
             num_rows,
             num_cols,
             number_of_header_rows,
@@ -1617,13 +1624,112 @@ class _NumbersModel(Cacheable):
         self.objects[sheet_id].drawable_infos.append(
             TSPMessages.Reference(identifier=table_info_id),
         )
+        self.register_table_in_sidebar(sheet_id, table_info_id)
 
         self.name_ref_cache.mark_dirty()
         return table_model_id
 
+    def _sidebar_root(self):
+        """
+        The root TreeNode of DocumentArchive.sidebar_order, or None if this
+        document doesn't have one at all.
+        """
+        document = self.objects[DOCUMENT_ID]
+        if not document.HasField("sidebar_order"):
+            return None
+        return self.objects[document.sidebar_order.identifier]
+
+    def _find_sidebar_node(self, parent_node, object_id: int):
+        """
+        The direct child of parent_node whose `object` is object_id, if any.
+
+        Skips (rather than raising on) a child reference that doesn't
+        resolve to a real object. This investigation found dangling
+        references in real Numbers.app-authored documents (a stale
+        object_uuid_map entry, unrelated to this fix but proof such
+        references exist in the wild) -- a sidebar lookup has no reason to
+        be less tolerant of that than the rest of the model already is.
+        """
+        return next(
+            (
+                self.objects[ref.identifier]
+                for ref in parent_node.children
+                if ref.identifier in self.objects
+                and self.objects[ref.identifier].HasField("object")
+                and self.objects[ref.identifier].object.identifier == object_id
+            ),
+            None,
+        )
+
+    def _append_sidebar_child(self, parent_node, object_id: int) -> None:
+        """Append a new leaf TreeNode{object: object_id} under parent_node."""
+        node_id, _ = self.objects.create_object_from_dict(
+            "Document",
+            {"object": {"identifier": object_id}},
+            TSKArchives.TreeNode,
+        )
+        parent_node.children.append(TSPMessages.Reference(identifier=node_id))
+
+    def register_sheet_in_sidebar(self, sheet_id: int) -> None:
+        """
+        Add this sheet to DocumentArchive.sidebar_order as a top-level
+        TreeNode, so it (and anything registered under it, such as its
+        tables via register_table_in_sidebar()) appears in Numbers' own
+        navigator sidebar.
+
+        add_sheet() previously never touched the sidebar tree at all, so a
+        library-added sheet -- and every table on it, since
+        register_table_in_sidebar() has nothing to attach to without this --
+        was completely absent from the navigator. Same class of gap as
+        register_table_in_sidebar(), one level up; see that method's
+        docstring for why this is a plain add_sheet() omission and not
+        entangled with the kind-1 owner identity fix.
+        """
+        root = self._sidebar_root()
+        if root is None:
+            return
+        self._append_sidebar_child(root, sheet_id)
+
+    def register_table_in_sidebar(self, sheet_id: int, table_info_id: int) -> None:
+        """
+        Add this table to DocumentArchive.sidebar_order as a TreeNode, so it
+        appears in Numbers' own navigator sidebar.
+
+        add_table() previously only added the new table to the sheet's own
+        drawable_infos; the sidebar tree is a separate structure Numbers.app
+        reads independently, and nothing wrote to it. This is a plain
+        omission in add_table() itself -- it happens on every call
+        regardless of whether the table ever gets a formula written to it --
+        not something specific to the formula-writing feature.
+
+        This is unrelated to (and unaffected by) the kind-1 owner identity
+        fix in derive_table_identity_uuid()/add_formula_owner(): the two
+        were previously entangled only because, before that fix, Numbers'
+        "adoption" of an untrusted kind-1 owner happened to also mint a
+        sidebar TreeNode as a side effect of fully reprocessing the table.
+        Now that a library-created table's kind-1 owner is trusted from the
+        first open and adoption no longer fires, nothing about opening the
+        file would still add a missing TreeNode -- so it needs to be
+        written here directly, independent of that fix, or the gap would
+        become permanent instead of self-healing on first save.
+        """
+        root = self._sidebar_root()
+        if root is None:
+            return
+        sheet_node = self._find_sidebar_node(root, sheet_id)
+        if sheet_node is None:
+            # No existing sidebar entry for this sheet. Shouldn't happen any
+            # more for a sheet added via add_sheet() (which now calls
+            # register_sheet_in_sidebar() itself), but degrade gracefully
+            # rather than raise for any other document shape that reaches
+            # here without one.
+            return
+        self._append_sidebar_child(sheet_node, table_info_id)
+
     def add_formula_owner(
         self,
         table_info_id: int,
+        table_id_uuid: NumbersUUID,
         num_rows: int,
         num_cols: int,
         number_of_header_rows: int,
@@ -1632,8 +1738,23 @@ class _NumbersModel(Cacheable):
         """
         Create a FormulaOwnerDependenciesArchive that references a TableInfoArchive
         so that cross-references to cells in this table will work.
+
+        table_id_uuid must be the exact same NumbersUUID the caller wrote into
+        this table's own TableModelArchive.table_id (a string field) -- see
+        derive_table_identity_uuid() for why the kind-1 owner's identity has
+        to be computed from that value specifically, not minted independently.
         """
-        formula_owner_uuid = NumbersUUID()
+        # Numbers.app does not trust a freshly minted uuid1 as this table's
+        # kind-1 (TABLE_MODEL) identity: on first open, finding the identity
+        # information it requires missing, it silently retires ("adopts")
+        # the untrusted owner and rebuilds the table's identity -- and every
+        # reference into the table that named it under the old identity --
+        # from scratch, under a value it derives itself. See derive_table_identity_uuid() and
+        # Claude chat handoff notes/session_2026-08-28_artifacts/
+        # fresh_eyes_findings_2026-08-28.md (round 4) for the round-trip proof.
+        # The aux owner family below (HAUNTED_OWNER) is deliberately left
+        # untouched: Numbers keeps it regardless of its UUID value.
+        table_model_owner_uuid = derive_table_identity_uuid(table_id_uuid)
         calc_engine = self.calc_engine()
         owner_id_map = calc_engine.dependency_tracker.owner_id_map.map_entry
         next_owner_id = max([x.internal_owner_id for x in owner_id_map]) + 1
@@ -1649,19 +1770,19 @@ class _NumbersModel(Cacheable):
             "top_left_column": 0,
             "top_left_row": 0,
             "bottom_right_column": num_cols - 1,
-            "bottom_right_row": num_cols - 1,
+            "bottom_right_row": num_rows - 1,
         }
         body_range_for_table = {
             "top_left_column": number_of_header_columns,
             "top_left_row": number_of_header_rows,
             "bottom_right_column": num_cols - 1,
-            "bottom_right_row": num_cols - 1,
+            "bottom_right_row": num_rows - 1,
         }
 
         formula_deps_id, _ = self.objects.create_object_from_dict(
             "CalculationEngine",
             {
-                "formula_owner_uid": formula_owner_uuid.dict2,
+                "formula_owner_uid": table_model_owner_uuid.dict2,
                 "internal_formula_owner_id": next_owner_id,
                 "owner_kind": OwnerKind.TABLE_MODEL,
                 "cell_dependencies": {},
@@ -1690,9 +1811,10 @@ class _NumbersModel(Cacheable):
         owner_id_map.append(
             TSCEArchives.OwnerIDMapArchive.OwnerIDMapArchiveEntry(
                 internal_owner_id=next_owner_id,
-                owner_id=formula_owner_uuid.protobuf4,
+                owner_id=table_model_owner_uuid.protobuf4,
             ),
         )
+        self.register_table_identity_in_header_name_mgr(table_model_owner_uuid)
 
         # See Numbers.md#uuid-mapping for more details on mapping table model
         # UUID to the formula owner.
@@ -1740,6 +1862,42 @@ class _NumbersModel(Cacheable):
         )
         return formula_owner_uuid
 
+    def register_table_identity_in_header_name_mgr(self, table_identity_uuid: NumbersUUID) -> None:
+        """
+        Append this table's derived kind-1 identity to the document's
+        HeaderNameMgrArchive.per_tables list.
+
+        This is one of the three sites (alongside FormulaOwnerDependenciesArchive
+        .formula_owner_uid and its owner_id_map entry) that Numbers.app checks
+        when deciding whether to keep or "adopt" a table's formula owner -- see
+        derive_table_identity_uuid() and
+        Claude chat handoff notes/session_2026-08-28_artifacts/
+        fresh_eyes_findings_2026-08-28.md. Some older documents (see issue-18)
+        do not carry a HeaderNameMgrArchive at all; in that case there is
+        nothing to register and this is a no-op, matching how the rest of the
+        model tolerates that document shape.
+        """
+        header_name_mgr_ids = self.find_refs("HeaderNameMgrArchive")
+        if len(header_name_mgr_ids) == 0:
+            return
+        header_name_mgr = self.objects[header_name_mgr_ids[0]]
+        # Idempotency guard: safe against being called twice for the same
+        # table (not exercised by the current call graph -- add_formula_owner()
+        # calls this exactly once per table -- but cheap to guard against a
+        # future caller creating a duplicate per_tables entry).
+        target_hex = table_identity_uuid.hex
+        if any(uuid_to_hex(pt.table_uid) == target_hex for pt in header_name_mgr.per_tables):
+            return
+        header_name_mgr.per_tables.append(
+            TSTArchives.HeaderNameMgrArchive.PerTableArchive(
+                table_uid=table_identity_uuid.protobuf2,
+                # per_table_precedent is a required field in this archive;
+                # (0, 0) means "no header name precedent set yet", which is
+                # correct for a table that has just been created.
+                per_table_precedent=TSCEArchives.CellCoordinateArchive(column=0, row=0),
+            ),
+        )
+
     def add_sheet(self, sheet_name: str) -> int:
         """Add a new sheet with a copy of a table from another sheet."""
         sheet_id, _ = self.objects.create_object_from_dict(
@@ -1756,6 +1914,7 @@ class _NumbersModel(Cacheable):
         )
 
         self.objects[DOCUMENT_ID].sheets.append(TSPMessages.Reference(identifier=sheet_id))
+        self.register_sheet_in_sidebar(sheet_id)
 
         return sheet_id
 
