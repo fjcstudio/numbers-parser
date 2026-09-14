@@ -11,7 +11,12 @@ from numbers_parser import (
     NegativeNumberStyle,
     PaddingType,
 )
-from numbers_parser.constants import CHECKBOX_FALSE_VALUE, CHECKBOX_TRUE_VALUE, STAR_RATING_VALUE
+from numbers_parser.constants import (
+    CHECKBOX_FALSE_VALUE,
+    CHECKBOX_TRUE_VALUE,
+    DOCUMENT_ID,
+    STAR_RATING_VALUE,
+)
 from numbers_parser.generated import TSTArchives_pb2 as TSTArchives
 
 DATE_FORMAT_REF = [
@@ -1009,3 +1014,35 @@ def test_set_cell_formatting_without_format_table(configurable_save_file):
     assert cell.formatted_value == "3.142"
     # The id the cell carries must resolve in format_table, not only the legacy list
     assert cell._num_format_id in {e.key for e in format_table.entries}
+
+
+def test_custom_format_on_document_without_custom_format_list(configurable_save_file):
+    """
+    Regression: issue-18.numbers predates document.super.custom_format_list, so
+    doc.custom_formats and add_custom_format() used to crash with KeyError: 0
+    reading the unset reference's identifier.
+    """
+    with pytest.warns(RuntimeWarning):
+        doc = Document("tests/data/issue-18.numbers")
+    assert not doc._model.objects[DOCUMENT_ID].super.HasField("custom_format_list")
+    assert doc.custom_formats == {}
+
+    custom = doc.add_custom_format(
+        name="Padded",
+        type="number",
+        integer_format=PaddingType.ZEROS,
+        decimal_format=PaddingType.ZEROS,
+        num_integers=3,
+        num_decimals=2,
+    )
+    table = doc.sheets[0].tables[0]
+    table.write(1, 2, 3.14159)
+    table.set_cell_formatting(1, 2, "custom", format=custom)
+    doc.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    assert list(reopened.custom_formats.keys()) == ["Padded"]
+    assert reopened._model.objects[DOCUMENT_ID].super.HasField("custom_format_list")
+    cell = reopened.sheets[0].tables[0].cell(1, 2)
+    assert cell.value == 3.14159
+    assert cell.formatted_value == "003.14"

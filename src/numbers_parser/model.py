@@ -556,10 +556,27 @@ class _NumbersModel(Cacheable):
         bds = self.objects[table_id].base_data_store
         return [self.objects[t.tile.identifier] for t in bds.tiles.tiles]
 
+    def custom_format_list_archive(self) -> object:
+        """
+        Return the document's TSK.CustomFormatListArchive, creating an empty one
+        if the document predates the field. Older documents leave
+        document.super.custom_format_list unset, so reading its identifier gives
+        the proto default of 0 and self.objects[0] raises KeyError. New documents
+        store this archive alongside the document in Index/Document.iwa.
+        """
+        document_super = self.objects[DOCUMENT_ID].super
+        if not document_super.HasField("custom_format_list"):
+            list_id, _ = self.objects.create_object_from_dict(
+                "Index/Document",
+                {},
+                TSKArchives.CustomFormatListArchive,
+            )
+            self.set_reference(document_super.custom_format_list, list_id)
+        return self.objects[document_super.custom_format_list.identifier]
+
     @cache(num_args=0)
     def custom_format_map(self):
-        custom_format_list_id = self.objects[DOCUMENT_ID].super.custom_format_list.identifier
-        custom_format_list = self.objects[custom_format_list_id]
+        custom_format_list = self.custom_format_list_archive()
         return {
             NumbersUUID(u).hex: custom_format_list.custom_formats[i]
             for i, u in enumerate(custom_format_list.uuids)
@@ -729,8 +746,7 @@ class _NumbersModel(Cacheable):
         self._custom_format_archives[formatting.name] = format_archive
         self._custom_format_uuids[formatting.name] = format_uuid
 
-        custom_format_list_id = self.objects[DOCUMENT_ID].super.custom_format_list.identifier
-        custom_format_list = self.objects[custom_format_list_id]
+        custom_format_list = self.custom_format_list_archive()
         custom_format_list.custom_formats.append(format_archive)
         custom_format_list.uuids.append(format_uuid)
 
@@ -2335,10 +2351,10 @@ class _NumbersModel(Cacheable):
     @property
     def custom_formats(self) -> dict[str, CustomFormatting]:
         if self._custom_formats is None:
-            custom_format_list_id = self.objects[DOCUMENT_ID].super.custom_format_list.identifier
-            custom_formats = self.objects[custom_format_list_id].custom_formats
+            custom_format_list = self.custom_format_list_archive()
+            custom_formats = custom_format_list.custom_formats
             custom_format_names = [x.name for x in custom_formats]
-            custom_format_uuids = list(self.objects[custom_format_list_id].uuids)
+            custom_format_uuids = list(custom_format_list.uuids)
             self._custom_formats = {}
             self._custom_format_archives = {}
             self._custom_format_uuids = {}
