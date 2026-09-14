@@ -146,9 +146,40 @@ class DataLists(Cacheable):
         self._datalist_name = datalist_name
         # Older documents may only populate a legacy DataStore field (e.g. the
         # required format_table_pre_bnc) and leave its newer optional sibling
-        # (format_table) unset. add_table() reads the fallback list in that case
-        # instead of dereferencing the unset reference's default id of 0.
+        # (format_table) unset, so dereferencing the unset reference's default
+        # identifier of 0 raises KeyError. fallback_datalist_name names that
+        # legacy field; add_table() seeds a real datalist from it rather than
+        # reading it in place, because version 5 cell storage resolves its
+        # format ids against format_table only (see _create_datalist_from).
         self._fallback_datalist_name = fallback_datalist_name
+
+    def _create_datalist_from(self, base_data_store: object, fallback_id: int) -> int:
+        """
+        Populate a missing datalist field, seeded from its legacy sibling.
+
+        Cell storage version 5 resolves its format ids against format_table, not
+        against format_table_pre_bnc: across this suite's fixtures there are 109
+        tables where the two lists hold different keys and the cells always track
+        format_table, and none that track the legacy list. Reading the legacy list
+        in place would therefore make new entries unresolvable for Numbers, so
+        create the field the cells actually index and copy the legacy entries into
+        it, preserving their keys so existing references stay valid.
+        """
+        datalist_id, datalist = self._model.objects.create_object_from_dict(
+            "Index/Tables/TableDataList-{}",
+            {"listType": TSTArchives.TableDataList.ListType.FORMAT, "nextListID": 1},
+            TSTArchives.TableDataList,
+        )
+        self._model.add_component_metadata(
+            datalist_id,
+            "CalculationEngine",
+            "Tables/TableDataList-{}",
+        )
+        fallback = self._model.objects[fallback_id]
+        datalist.CopyFrom(fallback)
+        datalist.listType = TSTArchives.TableDataList.ListType.FORMAT
+        self._model.set_reference(getattr(base_data_store, self._datalist_name), datalist_id)
+        return datalist_id
 
     @cache()
     def add_table(self, table_id: int) -> None:
@@ -159,7 +190,10 @@ class DataLists(Cacheable):
             and self._fallback_datalist_name is not None
             and base_data_store.HasField(self._fallback_datalist_name)
         ):
-            datalist_id = getattr(base_data_store, self._fallback_datalist_name).identifier
+            datalist_id = self._create_datalist_from(
+                base_data_store,
+                getattr(base_data_store, self._fallback_datalist_name).identifier,
+            )
         else:
             datalist_id = getattr(base_data_store, self._datalist_name).identifier
         datalist = self._model.objects[datalist_id]

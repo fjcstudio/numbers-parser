@@ -12,6 +12,7 @@ from numbers_parser import (
     PaddingType,
 )
 from numbers_parser.constants import CHECKBOX_FALSE_VALUE, CHECKBOX_TRUE_VALUE, STAR_RATING_VALUE
+from numbers_parser.generated import TSTArchives_pb2 as TSTArchives
 
 DATE_FORMAT_REF = [
     ["", "1 pm", "1:25 pm", "1:25:42 pm", "13:25", "13:25:42"],
@@ -968,6 +969,10 @@ def test_set_cell_formatting_without_format_table(configurable_save_file):
     Regression: issue-18.numbers only populates the legacy DataStore field
     format_table_pre_bnc and leaves format_table unset, so the first format
     lookup used to crash with KeyError: 0 in DataLists.add_table().
+
+    Version 5 cell storage resolves format ids against format_table, so the
+    saved document must carry a real format_table holding the new entry, not
+    just the legacy list, or Numbers cannot resolve the cell's format id.
     """
     with pytest.warns(RuntimeWarning):
         doc = Document("tests/data/issue-18.numbers")
@@ -988,6 +993,19 @@ def test_set_cell_formatting_without_format_table(configurable_save_file):
     )
     doc.save(configurable_save_file)
 
-    cell = Document(configurable_save_file).sheets[0].tables[0].cell(1, 2)
+    reopened = Document(configurable_save_file)
+    saved_table = reopened.sheets[0].tables[0]
+    saved_data_store = saved_table._model.objects[saved_table._table_id].base_data_store
+    assert saved_data_store.HasField("format_table")
+
+    format_table = reopened._model.objects[saved_data_store.format_table.identifier]
+    assert format_table.listType == TSTArchives.TableDataList.ListType.FORMAT
+    # The legacy list's existing keys are preserved so old references stay valid
+    legacy = reopened._model.objects[saved_data_store.format_table_pre_bnc.identifier]
+    assert {e.key for e in legacy.entries} <= {e.key for e in format_table.entries}
+
+    cell = saved_table.cell(1, 2)
     assert cell.value == 3.14159
     assert cell.formatted_value == "3.142"
+    # The id the cell carries must resolve in format_table, not only the legacy list
+    assert cell._num_format_id in {e.key for e in format_table.entries}
