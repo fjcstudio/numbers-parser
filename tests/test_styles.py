@@ -14,7 +14,8 @@ from numbers_parser import (
     VerticalJustification,
 )
 from numbers_parser.cell import DEFAULT_ALIGNMENT_CLASS
-from numbers_parser.constants import DEFAULT_FONT, DEFAULT_FONT_SIZE
+from numbers_parser.constants import DEFAULT_FONT, DEFAULT_FONT_SIZE, DOCUMENT_ID
+from numbers_parser.iwafile import find_extension
 
 TEST_NUMBERED_REF = [
     "(1) double-paren-1",
@@ -549,3 +550,28 @@ def test_unmutated_style_survives_readonly_resave(configurable_save_file):
     final_cell = final.sheets[0].tables[0].cell(0, 0)
     assert final_cell.style.font_name == original_font_name
     assert final_cell.style.font_size == original_font_size
+
+
+def test_parentless_theme_presets_save_without_crashing(configurable_save_file):
+    """
+    Regression: the theme in issue-18.numbers has root paragraph_style_presets
+    with no super.parent, so char_property()/para_property()/cell_property()
+    used to dereference parent id 0 (KeyError: 0) while saving.
+    """
+    with pytest.warns(RuntimeWarning):
+        doc = Document("tests/data/issue-18.numbers")
+
+    # Confirm the fixture still exercises the parentless path
+    model = doc.sheets[0].tables[0]._model
+    theme_id = model.objects[DOCUMENT_ID].theme.identifier
+    presets = find_extension(model.objects[theme_id].super, "paragraph_style_presets")
+    assert len(presets) > 0
+    assert all(not model.objects[x.identifier].super.HasField("parent") for x in presets)
+
+    doc.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    assert reopened.sheets[0].tables[0].merge_ranges == ["B3:D3"]
+    styles = reopened._model.available_paragraph_styles()
+    assert len(styles) == len(presets)
+    assert all(style.font_name == DEFAULT_FONT for style in styles.values())

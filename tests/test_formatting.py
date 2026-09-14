@@ -961,3 +961,33 @@ def test_no_space_date_formats():
         if row[0].formula is None:
             continue
         assert row[0].formatted_value == row[1].value
+
+
+def test_set_cell_formatting_without_format_table(configurable_save_file):
+    """
+    Regression: issue-18.numbers only populates the legacy DataStore field
+    format_table_pre_bnc and leaves format_table unset, so the first format
+    lookup used to crash with KeyError: 0 in DataLists.add_table().
+    """
+    with pytest.warns(RuntimeWarning):
+        doc = Document("tests/data/issue-18.numbers")
+    table = doc.sheets[0].tables[0]
+    base_data_store = table._model.objects[table._table_id].base_data_store
+
+    # Confirm the fixture still exercises the fallback path
+    assert not base_data_store.HasField("format_table")
+    assert base_data_store.HasField("format_table_pre_bnc")
+
+    table.write(1, 2, 3.14159)
+    table.set_cell_formatting(
+        1,
+        2,
+        "number",
+        decimal_places=3,
+        negative_style=NegativeNumberStyle.RED,
+    )
+    doc.save(configurable_save_file)
+
+    cell = Document(configurable_save_file).sheets[0].tables[0].cell(1, 2)
+    assert cell.value == 3.14159
+    assert cell.formatted_value == "3.142"

@@ -133,17 +133,35 @@ class MergeCells:
 class DataLists(Cacheable):
     """Model for TST.DataList with caching and key generation for new values."""
 
-    def __init__(self, model: object, datalist_name: str, value_attr: str | None = None) -> None:
+    def __init__(
+        self,
+        model: object,
+        datalist_name: str,
+        value_attr: str | None = None,
+        fallback_datalist_name: str | None = None,
+    ) -> None:
         self._model = model
         self._datalists = {}
         self._value_attr = value_attr
         self._datalist_name = datalist_name
+        # Older documents may only populate a legacy DataStore field (e.g. the
+        # required format_table_pre_bnc) and leave its newer optional sibling
+        # (format_table) unset. add_table() reads the fallback list in that case
+        # instead of dereferencing the unset reference's default id of 0.
+        self._fallback_datalist_name = fallback_datalist_name
 
     @cache()
     def add_table(self, table_id: int) -> None:
         """Cache a new datalist for a table if not already seen."""
         base_data_store = self._model.objects[table_id].base_data_store
-        datalist_id = getattr(base_data_store, self._datalist_name).identifier
+        if (
+            not base_data_store.HasField(self._datalist_name)
+            and self._fallback_datalist_name is not None
+            and base_data_store.HasField(self._fallback_datalist_name)
+        ):
+            datalist_id = getattr(base_data_store, self._fallback_datalist_name).identifier
+        else:
+            datalist_id = getattr(base_data_store, self._datalist_name).identifier
         datalist = self._model.objects[datalist_id]
 
         max_key = 0
@@ -231,7 +249,12 @@ class _NumbersModel(Cacheable):
         self._merge_cells = defaultdict(MergeCells)
         self._row_heights = {}
         self._col_widths = {}
-        self._table_formats = DataLists(self, "format_table", "format")
+        self._table_formats = DataLists(
+            self,
+            "format_table",
+            "format",
+            fallback_datalist_name="format_table_pre_bnc",
+        )
         self._table_styles = DataLists(self, "styleTable", "reference")
         self._table_strings = DataLists(self, "stringTable", "string")
         self._control_specs = DataLists(self, "control_cell_spec_table", "cell_spec")
@@ -2470,9 +2493,10 @@ class _NumbersModel(Cacheable):
     def char_property(self, style: object, field: str):
         """
         Return a char_property field from a style if present
-        in the style, or from the parent if not.
+        in the style, or from the parent if not. A root style (no parent)
+        with the field unset falls back to the field's proto default.
         """
-        if not style.char_properties.HasField(field):
+        if not style.char_properties.HasField(field) and style.super.HasField("parent"):
             parent = self.objects[style.super.parent.identifier]
             return getattr(parent.char_properties, field)
         return getattr(style.char_properties, field)
@@ -2480,9 +2504,10 @@ class _NumbersModel(Cacheable):
     def para_property(self, style: object, field: str) -> float:
         """
         Return a para_property field from a style if present
-        in the style, or from the parent if not.
+        in the style, or from the parent if not. A root style (no parent)
+        with the field unset falls back to the field's proto default.
         """
-        if not style.para_properties.HasField(field):
+        if not style.para_properties.HasField(field) and style.super.HasField("parent"):
             parent = self.objects[style.super.parent.identifier]
             return getattr(parent.para_properties, field)
         return getattr(style.para_properties, field)
@@ -2490,9 +2515,10 @@ class _NumbersModel(Cacheable):
     def cell_property(self, style: object, field: str) -> float:
         """
         Return a cell_property field from a style if present
-        in the style, or from the parent if not.
+        in the style, or from the parent if not. A root style (no parent)
+        with the field unset falls back to the field's proto default.
         """
-        if not style.cell_properties.HasField(field):
+        if not style.cell_properties.HasField(field) and style.super.HasField("parent"):
             parent = self.objects[style.super.parent.identifier]
             return getattr(parent.cell_properties, field)
         return getattr(style.cell_properties, field)
@@ -2530,6 +2556,9 @@ class _NumbersModel(Cacheable):
     def cell_font_name(self, obj: Cell | object) -> str:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
         font_name = self.char_property(style, "font_name")
+        if not font_name:
+            # Unset on a root style with no parent to inherit from
+            return DEFAULT_FONT
         if font_name not in FONT_NAME_TO_FAMILY:
             if font_name not in self.missing_fonts:
                 warn(
