@@ -10,6 +10,7 @@ from itertools import chain
 from math import floor
 from pathlib import Path
 from struct import pack
+from typing import ClassVar
 from warnings import warn
 
 from numbers_parser.bullets import (
@@ -1365,11 +1366,52 @@ class _NumbersModel(Cacheable):
             TSPArchiveMessages.ComponentExternalReference(**params),
         )
 
+    # DataStore lists that every Numbers-written table in tests/data carries.
+    # Third-party writers can omit them (tests/data/issue-18.numbers comes from
+    # SheetJS and lacks all of these), and Numbers then renders the whole table
+    # blank, so save creates any that are missing. multipleChoiceListFormatTable
+    # is deliberately not listed: tables saved by older Numbers versions lack it
+    # and render normally.
+    REQUIRED_DATA_LISTS: ClassVar[dict[str, int]] = {
+        "format_table": TSTArchives.TableDataList.ListType.FORMAT,
+        "formulaErrorTable": TSTArchives.TableDataList.ListType.FORMULA_ERROR,
+        "rich_text_table": TSTArchives.TableDataList.ListType.RICH_TEXT_PAYLOAD,
+        "conditionalstyletable": TSTArchives.TableDataList.ListType.CONDITIONAL_STYLE,
+        "commentStorageTable": TSTArchives.TableDataList.ListType.COMMENT_STORAGE,
+        "importWarningSetTable": TSTArchives.TableDataList.ListType.IMPORT_WARNING,
+        "control_cell_spec_table": TSTArchives.TableDataList.ListType.CONTROL_CELL_SPEC,
+    }
+
+    def ensure_table_data_lists(self, table_id: int) -> None:
+        """
+        Create any of REQUIRED_DATA_LISTS a table's DataStore lacks.
+
+        Verified in Numbers 15.3.1: a table missing only format_table renders
+        blank, and issue-18.numbers renders correctly once these lists exist.
+        format_table is seeded from the legacy format_table_pre_bnc when that is
+        present so existing format keys stay valid.
+        """
+        base_data_store = self.objects[table_id].base_data_store
+        for field, list_type in self.REQUIRED_DATA_LISTS.items():
+            if base_data_store.HasField(field):
+                continue
+            if field == "format_table" and base_data_store.HasField("format_table_pre_bnc"):
+                self._table_formats.add_table(table_id)
+                continue
+            list_id, _ = self.objects.create_object_from_dict(
+                "Index/Tables/TableDataList-{}",
+                {"listType": list_type, "nextListID": 1},
+                TSTArchives.TableDataList,
+            )
+            self.add_component_metadata(list_id, "CalculationEngine", "Tables/TableDataList-{}")
+            self.set_reference(getattr(base_data_store, field), list_id)
+
     def recalculate_table_data(self, table_id: int, data: list) -> None:
         table_model = self.objects[table_id]
         table_model.number_of_rows = len(data)
         table_model.number_of_columns = len(data[0])
 
+        self.ensure_table_data_lists(table_id)
         self.init_table_strings(table_id)
         self.recalculate_row_headers(table_id, data)
         self.recalculate_column_headers(table_id, data)

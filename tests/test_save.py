@@ -10,6 +10,8 @@ from numbers_parser.constants import (
     DEFAULT_ROW_HEIGHT,
     DEFAULT_TABLE_OFFSET,
 )
+from numbers_parser.generated import TSTArchives_pb2 as TSTArchives
+from numbers_parser.model import _NumbersModel
 
 
 def test_empty_document(configurable_save_file):
@@ -346,3 +348,43 @@ def test_edit_table_rows_columns(configurable_save_file):
     for row, cells in enumerate(table.iter_rows()):
         for col, _ in enumerate(cells):
             assert table.cell(row, col).formatted_value == ref_values[row][col]
+
+
+def test_save_creates_missing_data_lists(configurable_save_file):
+    """
+    Regression: tests/data/issue-18.numbers was written by SheetJS and lacks the
+    DataStore lists every Numbers-written table carries, and Numbers 15.3.1
+    renders it completely blank. Saving creates the missing lists so the saved
+    document renders; a Numbers-written document already has them all.
+    """
+    with pytest.warns(RuntimeWarning):
+        doc = Document("tests/data/issue-18.numbers")
+    table = doc.sheets[0].tables[0]
+    base_data_store = table._model.objects[table._table_id].base_data_store
+    missing = [f for f in _NumbersModel.REQUIRED_DATA_LISTS if not base_data_store.HasField(f)]
+    assert missing == list(_NumbersModel.REQUIRED_DATA_LISTS)
+
+    doc.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    table = reopened.sheets[0].tables[0]
+    base_data_store = table._model.objects[table._table_id].base_data_store
+    for field, list_type in _NumbersModel.REQUIRED_DATA_LISTS.items():
+        assert base_data_store.HasField(field), field
+        datalist = reopened._model.objects[getattr(base_data_store, field).identifier]
+        assert isinstance(datalist, TSTArchives.TableDataList), field
+        assert datalist.listType == list_type, field
+    # The legacy format list's keys are carried into the new format_table
+    legacy = reopened._model.objects[base_data_store.format_table_pre_bnc.identifier]
+    format_table = reopened._model.objects[base_data_store.format_table.identifier]
+    assert {e.key for e in legacy.entries} <= {e.key for e in format_table.entries}
+    assert table.cell(0, 0).value == "SheetJS"
+    assert table.merge_ranges == ["B3:D3"]
+
+    # A Numbers-written document gains no new objects from this step
+    doc = Document("tests/data/test-1.numbers")
+    before = len(doc._model.objects._objects)
+    for sheet in doc.sheets:
+        for t in sheet.tables:
+            doc._model.ensure_table_data_lists(t._table_id)
+    assert len(doc._model.objects._objects) == before
