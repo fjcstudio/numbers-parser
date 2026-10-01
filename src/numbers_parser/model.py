@@ -1240,10 +1240,9 @@ class _NumbersModel(Cacheable):
         # every single save, silently overwrites a literal 0.0 that was
         # deliberately saved (by this process or a previous one) with a
         # concrete rounded default -- destroying the row_height(row, 0)
-        # auto-fit sentinel the very next time the file is saved again (see
-        # bug_fixes/row_height_zero_sentinel_lost_on_resave.md). Preserve any
-        # row's existing on-disk value verbatim unless this session
-        # explicitly set a new height for it.
+        # auto-fit sentinel the very next time the file is saved again.
+        # Preserve any row's existing on-disk value verbatim unless this
+        # session explicitly set a new height for it.
         existing_sizes = {h.index: h.size for h in buckets.headers}
         overrides = self._row_heights.get(table_id, {})
         clear_field_container(buckets.headers)
