@@ -761,3 +761,31 @@ def test_issue_174(configurable_save_file):
         assert cell.style.bold == styles[i].bold
         assert cell.style.italic == styles[i].italic
         assert cell.style.font_size == styles[i].font_size
+
+
+def test_register_font(configurable_save_file):
+    from numbers_parser import register_font
+
+    with pytest.raises(IndexError):
+        Style(font_name="Roboto")
+
+    register_font("Roboto-Regular", family="Roboto")
+    register_font("Roboto-Light", family="Roboto", style="Light")
+
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(0, 0, "a")
+    table.write(0, 1, "b")
+    table.set_cell_style(0, 0, Style(font_name="Roboto"))
+    table.set_cell_style(0, 1, Style(font_name=("Roboto", "Light")))
+    doc.save(configurable_save_file)
+
+    table2 = Document(configurable_save_file).sheets[0].tables[0]
+    assert table2.cell(0, 0).style.font_name == "Roboto"
+    assert table2.cell(0, 1).style.font_name == "Roboto"
+    assert table2._model.cell_font_details(table2.cell(0, 1))["name"] == "Roboto-Light"
+
+    # A read style copied back to a new style keeps the registered font
+    table2.set_cell_style(1, 0, Style(font_name=table2.cell(0, 1).style.font_name, bold=True))
+    with pytest.raises(TypeError):
+        register_font("")

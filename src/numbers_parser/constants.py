@@ -8,6 +8,7 @@ import enum_tools.documentation
 from numbers_parser.generated.fontmap import GENERATED_FONT_MAP
 
 __all__ = [
+    "register_font",
     "CellPadding",
     "CellType",
     "CellValueType",
@@ -468,3 +469,27 @@ def update_font_maps(font_map: dict) -> dict:
 
 
 update_font_maps(GENERATED_FONT_MAP)
+
+
+def register_font(
+    name: str,
+    family: str | None = None,
+    style: str = "Regular",
+    bold: bool = False,
+    italic: bool = False,
+) -> None:
+    """Make a font that is not shipped with Numbers usable in a :class:`Style`.
+
+    ``name`` is the PostScript name stored in the document, for example
+    ``"Roboto-Regular"``. ``family`` is the name passed as ``Style.font_name``
+    and defaults to ``name``. Fonts that are not registered continue to be
+    rejected by ``Style`` so that typos are still reported.
+    """
+    if not isinstance(name, str) or not name:
+        msg = "font name must be a non-empty string"
+        raise TypeError(msg)
+    family = family or name
+    details = {"name": name, "family": family, "style": style, "bold": bold, "italic": italic}
+    FONT_MAP[name] = details
+    FONT_TUPLE_MAP[(family, style)] = details
+    FONT_FAMILY_DEFAULT.setdefault(family, details)
