@@ -113,3 +113,72 @@ def test_table_options(configurable_save_file):
     doc.save(configurable_save_file)
     doc = Document(configurable_save_file)
     assert not doc.sheets[0].tables[0].table_name_enabled
+
+
+def _saved_row_sizes(doc, table):
+    model = doc._model
+    bds = model.objects[table._table_id].base_data_store
+    bucket = model.objects[bds.rowHeaders.buckets[0].identifier]
+    return {h.index: h.size for h in bucket.headers}
+
+
+def _saved_col_sizes(doc, table):
+    model = doc._model
+    bds = model.objects[table._table_id].base_data_store
+    bucket = model.objects[bds.columnHeaders.identifier]
+    return {h.index: h.size for h in bucket.headers}
+
+
+def test_row_height_zero_survives_resave(tmp_path):
+    """row_height(row, 0) (auto-fit) must survive reopen+save cycles."""
+    doc = Document("tests/data/test-1.numbers")
+    table = doc.sheets[0].tables[0]
+    table.row_height(2, 0)
+    table.row_height(4, 40)
+    path = tmp_path / "gen0.numbers"
+    doc.save(path)
+
+    for gen in range(1, 4):
+        doc = Document(path)
+        table = doc.sheets[0].tables[0]
+        # getter still substitutes the table default for in-memory callers
+        assert table.row_height(2) == 20
+        path = tmp_path / f"gen{gen}.numbers"
+        doc.save(path)
+
+    sizes = _saved_row_sizes(Document(path), Document(path).sheets[0].tables[0])
+    assert sizes[2] == 0.0
+    assert sizes[4] == 40.0
+
+
+def test_resave_preserves_untouched_row_and_col_sizes(tmp_path):
+    doc = Document("tests/data/test-1.numbers")
+    table = doc.sheets[0].tables[0]
+    table.row_height(1, 33)
+    table.col_width(1, 123)
+    first = tmp_path / "first.numbers"
+    doc.save(first)
+    before = Document(first)
+    rows_before = _saved_row_sizes(before, before.sheets[0].tables[0])
+    cols_before = _saved_col_sizes(before, before.sheets[0].tables[0])
+
+    second = tmp_path / "second.numbers"
+    before.save(second)
+    after = Document(second)
+    assert _saved_row_sizes(after, after.sheets[0].tables[0]) == rows_before
+    assert _saved_col_sizes(after, after.sheets[0].tables[0]) == cols_before
+
+
+def test_explicit_height_overrides_saved_value(tmp_path):
+    doc = Document("tests/data/test-1.numbers")
+    table = doc.sheets[0].tables[0]
+    table.row_height(3, 0)
+    first = tmp_path / "first.numbers"
+    doc.save(first)
+
+    doc = Document(first)
+    doc.sheets[0].tables[0].row_height(3, 50)
+    second = tmp_path / "second.numbers"
+    doc.save(second)
+    after = Document(second)
+    assert _saved_row_sizes(after, after.sheets[0].tables[0])[3] == 50.0

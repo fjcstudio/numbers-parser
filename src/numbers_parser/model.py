@@ -1225,17 +1225,37 @@ class _NumbersModel(Cacheable):
         return row_buffer[col]
 
     def recalculate_row_headers(self, table_id: int, data: list) -> None:
-        current_row_heights = {}
-        for row in range(self.number_of_rows(table_id)):
-            current_row_heights[row] = self.row_height(table_id, row)
-
         base_data_store = self.objects[table_id].base_data_store
         buckets = self.objects[base_data_store.rowHeaders.buckets[0].identifier]
+        # Capture the sizes already on disk BEFORE clearing, keyed by row.
+        # A saved size of 0.0 is ambiguous on its own -- it's the file
+        # format's normal "never customized, use default_row_height" state
+        # for most rows, but it's also what Table.row_height(row, 0) writes
+        # to mean "auto-fit this row". row_height()'s own getter resolves
+        # that ambiguity in favour of the common case (substituting
+        # default_row_height) and must keep doing that for in-memory
+        # queries like Table.height -- see test_table_size.py::test_row_col_sizes,
+        # which depends on exactly that substitution and never calls save().
+        # But re-deriving every row's height through that getter here, on
+        # every single save, silently overwrites a literal 0.0 that was
+        # deliberately saved (by this process or a previous one) with a
+        # concrete rounded default -- destroying the row_height(row, 0)
+        # auto-fit sentinel the very next time the file is saved again (see
+        # bug_fixes/row_height_zero_sentinel_lost_on_resave.md). Preserve any
+        # row's existing on-disk value verbatim unless this session
+        # explicitly set a new height for it.
+        existing_sizes = {h.index: h.size for h in buckets.headers}
+        overrides = self._row_heights.get(table_id, {})
         clear_field_container(buckets.headers)
 
         for row, cells in enumerate(data):
             num_cols = len(cells) - sum([isinstance(x, MergedCell) for x in cells])
-            height = current_row_heights[row]
+            if row in overrides:
+                height = overrides[row]
+            elif row in existing_sizes:
+                height = existing_sizes[row]
+            else:
+                height = round(self.objects[table_id].default_row_height)
             header = TSTArchives.HeaderStorageBucket.Header(
                 index=row,
                 numberOfCells=num_cols,
@@ -1245,19 +1265,25 @@ class _NumbersModel(Cacheable):
             buckets.headers.append(header)
 
     def recalculate_column_headers(self, table_id: int, data: list) -> None:
-        current_column_widths = {}
-        for col in range(self.number_of_columns(table_id)):
-            current_column_widths[col] = self.col_width(table_id, col)
-
         base_data_store = self.objects[table_id].base_data_store
         buckets = self.objects[base_data_store.columnHeaders.identifier]
+        # See recalculate_row_headers() for why existing sizes are captured
+        # and preserved verbatim rather than re-derived through col_width()'s
+        # getter: the same 0.0-is-ambiguous issue applies to column widths.
+        existing_sizes = {h.index: h.size for h in buckets.headers}
+        overrides = self._col_widths.get(table_id, {})
         clear_field_container(buckets.headers)
         # Transpose data to get columns
         col_data = [list(x) for x in zip(*data)]
 
         for col, cells in enumerate(col_data):
             num_rows = len(cells) - sum([isinstance(x, MergedCell) for x in cells])
-            width = current_column_widths[col]
+            if col in overrides:
+                width = overrides[col]
+            elif col in existing_sizes:
+                width = existing_sizes[col]
+            else:
+                width = round(self.objects[table_id].default_column_width)
             header = TSTArchives.HeaderStorageBucket.Header(
                 index=col,
                 numberOfCells=num_rows,
