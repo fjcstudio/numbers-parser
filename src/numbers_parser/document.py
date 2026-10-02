@@ -376,6 +376,28 @@ class Sheet:
     def name(self, value: str) -> None:
         self._model.sheet_name(self._sheet_id, value)
 
+    @property
+    def ruler_guides(self) -> list:
+        """
+        List[Tuple[str, float]]: Every ruler guide on this sheet, as
+        (axis, position) tuples -- axis is ``"horizontal"`` or
+        ``"vertical"``, position is in points.
+        """
+        return self._model.ruler_guides(self._sheet_id)
+
+    def add_ruler_guide(self, axis: str, position: float) -> None:
+        """
+        Add a ruler guide to this sheet.
+
+        Parameters
+        ----------
+        axis: str
+            ``"horizontal"`` or ``"vertical"``.
+        position: float
+            Distance from the sheet's own top/left edge, in points.
+        """
+        self._model.add_ruler_guide(self._sheet_id, axis, position)
+
     def add_table(
         self,
         table_name: str | None = None,
@@ -523,6 +545,18 @@ class Table(Cacheable):
     @table_name_enabled.setter
     def table_name_enabled(self, enabled: bool) -> None:
         self._model.table_name_enabled(self._table_id, enabled)
+
+    @property
+    def table_name_height(self) -> float:
+        """
+        float: Height of the table's name banner, in points. Read-only.
+
+        Numbers.app computes this when it renders the caption, so it reports
+        ``0.0`` when ``table_name_enabled`` is ``False`` and also for a table
+        created in this session that Numbers.app has never saved. The two
+        cases cannot be told apart from this value.
+        """
+        return self._model.table_name_height(self._table_id)
 
     @property
     def caption_enabled(self) -> int:

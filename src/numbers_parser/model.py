@@ -318,6 +318,44 @@ class _NumbersModel(Cacheable):
         self.objects[sheet_id].name = value
         return None
 
+    def ruler_guides(self, sheet_id: int) -> list:
+        """Return the sheet's ruler guides as (axis, position) tuples, in points."""
+        sheet_obj = self.objects[sheet_id]
+        if not sheet_obj.HasField("userDefinedGuideStorage"):
+            return []
+        storage_id = sheet_obj.userDefinedGuideStorage.identifier
+        storage_obj = self.objects[storage_id]
+        return [
+            ("vertical" if g.type == 1 else "horizontal", g.position)
+            for g in storage_obj.userDefinedGuides
+        ]
+
+    def add_ruler_guide(self, sheet_id: int, axis: str, position: float) -> None:
+        """Add a ruler guide ("horizontal" or "vertical") at position, in points.
+
+        The sheet's GuideStorageArchive is created on the first guide.
+        """
+        if axis not in ("horizontal", "vertical"):
+            msg = "axis must be 'horizontal' or 'vertical'"
+            raise ValueError(msg)
+        guide_type = 1 if axis == "vertical" else 0
+
+        sheet_obj = self.objects[sheet_id]
+        if not sheet_obj.HasField("userDefinedGuideStorage"):
+            storage_id, _ = self.objects.create_object_from_dict(
+                "Document",
+                {"userDefinedGuides": []},
+                TSDArchives.GuideStorageArchive,
+            )
+            sheet_obj.userDefinedGuideStorage.identifier = storage_id
+        else:
+            storage_id = sheet_obj.userDefinedGuideStorage.identifier
+
+        storage_obj = self.objects[storage_id]
+        guide = storage_obj.userDefinedGuides.add()
+        guide.type = guide_type
+        guide.position = position
+
     def set_table_data(self, table_id: int, data: list) -> None:
         self._table_data[table_id] = data
 
@@ -372,6 +410,10 @@ class _NumbersModel(Cacheable):
             self.objects[table_id].table_name_enabled = enabled
             return None
         return self.objects[table_id].table_name_enabled
+
+    def table_name_height(self, table_id: int) -> float:
+        """Return the table's name banner height in points (0.0 if never rendered)."""
+        return self.objects[table_id].table_name_height
 
     def caption_enabled(self, table_id: int, enabled: bool | None = None) -> bool:
         table_info = self.objects[self.table_info_id(table_id)]

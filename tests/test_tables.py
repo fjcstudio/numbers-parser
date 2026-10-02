@@ -182,6 +182,33 @@ def test_table_titles(configurable_save_file):
     table_titles_test_runner(new_doc)
 
 
+def test_table_name_height():
+    """table_name_height (read-only) returns exactly what's stored in
+    the table's own TableModelArchive, confirmed directly against the
+    raw protobuf field -- 0.0 for a freshly created table regardless of
+    table_name_enabled (confirmed directly this library cannot compute
+    or predict a real value for a table that's never itself been opened
+    and saved by real Numbers.app, since it has no rendering engine of
+    its own to do so), and whatever value is actually present for a
+    table loaded from an existing file.
+
+    None of this repo's own existing test fixtures happen to have a
+    non-zero value here (all appear to have been generated
+    programmatically rather than genuinely opened and saved by real
+    Numbers.app at least once, which is what actually populates this
+    field) -- this test confirms the property reads correctly either
+    way, not that a specific fixture has a specific non-zero value."""
+    doc = Document("tests/data/test-titles.numbers")
+    for table in doc.sheets[0].tables:
+        raw_value = doc._model.objects[table._table_id].table_name_height
+        assert table.table_name_height == raw_value
+
+    fresh_doc = Document()
+    fresh_table = fresh_doc.sheets[0].tables[0]
+    assert fresh_table.table_name_enabled
+    assert fresh_table.table_name_height == 0.0
+
+
 def test_stub_captions(configurable_save_file):
     doc = Document("tests/data/test-1.numbers")
     table0 = doc.sheets[0].tables[0]
