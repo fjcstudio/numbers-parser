@@ -182,3 +182,104 @@ def test_explicit_height_overrides_saved_value(tmp_path):
     doc.save(second)
     after = Document(second)
     assert _saved_row_sizes(after, after.sheets[0].tables[0])[3] == 50.0
+
+
+def _sizes(path):
+    table = Document(path).sheets[0].tables[0]
+    rows = [table.row_height(r) for r in range(table.num_rows)]
+    cols = [table.col_width(c) for c in range(table.num_cols)]
+    return rows, cols
+
+
+def _sized_table(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.row_height(3, 40)
+    table.col_width(3, 120)
+    doc.save(configurable_save_file)
+    return Document(configurable_save_file)
+
+
+def test_sizes_follow_rows_and_columns_on_insert(configurable_save_file):
+    doc = _sized_table(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    rows0, cols0 = len(table._data), table.num_cols
+    table.add_row(2, start_row=1)
+    table.add_column(1, start_col=1)
+    doc.save(configurable_save_file)
+
+    rows, cols = _sizes(configurable_save_file)
+    assert rows.index(40) == 5
+    assert cols.index(120) == 4
+    assert len(rows) == rows0 + 2
+    assert len(cols) == cols0 + 1
+    # Inserted rows and columns take the size of the row/column that was at
+    # the insertion point, which here has the default size.
+    default_row, default_col = rows[0], cols[0]
+    assert rows[1] == rows[2] == default_row
+    assert cols[1] == default_col
+
+
+def test_sizes_follow_rows_and_columns_on_delete(configurable_save_file):
+    doc = _sized_table(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.delete_row(1, start_row=1)
+    table.delete_column(1, start_col=1)
+    doc.save(configurable_save_file)
+
+    rows, cols = _sizes(configurable_save_file)
+    assert rows.index(40) == 2
+    assert cols.index(120) == 2
+
+
+def test_deleting_a_sized_row_or_column_removes_its_size(configurable_save_file):
+    doc = _sized_table(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.delete_row(1, start_row=3)
+    table.delete_column(1, start_col=3)
+    doc.save(configurable_save_file)
+
+    rows, cols = _sizes(configurable_save_file)
+    assert 40 not in rows
+    assert 120 not in cols
+
+
+def test_appending_does_not_move_sizes(configurable_save_file):
+    doc = _sized_table(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.add_row(2)
+    table.add_column(1)
+    doc.save(configurable_save_file)
+
+    rows, cols = _sizes(configurable_save_file)
+    assert rows.index(40) == 3
+    assert cols.index(120) == 3
+
+
+def test_session_sizes_follow_rows_on_insert():
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.row_height(5, 55)
+    table.add_row(2, start_row=1)
+    assert table.row_height(7) == 55
+    assert table.row_height(5) != 55
+
+
+def test_auto_fit_row_stays_with_its_content_on_insert(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.row_height(4, 0)
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    doc.sheets[0].tables[0].add_row(2, start_row=1)
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    model = doc._model
+    table = doc.sheets[0].tables[0]
+    base = model.objects[table._table_id].base_data_store
+    headers = model.objects[base.rowHeaders.buckets[0].identifier].headers
+    sizes = {h.index: h.size for h in headers}
+    assert sizes[6] == 0.0
+    assert sizes[4] != 0.0

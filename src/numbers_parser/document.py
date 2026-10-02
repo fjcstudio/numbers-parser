@@ -1160,6 +1160,8 @@ class Table(Cacheable):
         if start_row is None:
             start_row = self.num_rows
 
+        self._model.shift_row_sizes(self._table_id, start_row, num_rows)
+
         # Populate every cell's own _border from the sidecar BEFORE
         # anything shifts -- propagate_borders_into_inserted_rows below
         # needs the true, current per-cell border state to compare
@@ -1244,6 +1246,8 @@ class Table(Cacheable):
         if start_col is None:
             start_col = self.num_cols
 
+        self._model.shift_col_sizes(self._table_id, start_col, num_cols)
+
         # See the identical comment in add_row() above.
         self._model.extract_strokes(self._table_id)
 
@@ -1311,6 +1315,7 @@ class Table(Cacheable):
             del self._data[-num_rows:]
 
         self._model.shift_stroke_rows_on_delete(self._table_id, effective_start_row, num_rows)
+        self._model.shift_row_sizes(self._table_id, effective_start_row, -num_rows)
 
         self.num_rows -= num_rows
         self._model.number_of_rows(self._table_id, self.num_rows)
@@ -1367,6 +1372,7 @@ class Table(Cacheable):
                 self._data[row][col].col = col
 
         self._model.shift_stroke_columns_on_delete(self._table_id, effective_start_col, num_cols)
+        self._model.shift_col_sizes(self._table_id, effective_start_col, -num_cols)
 
         self.num_cols -= num_cols
         self._model.number_of_columns(self._table_id, self.num_cols)

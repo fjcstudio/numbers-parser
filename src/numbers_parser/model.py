@@ -1523,6 +1523,77 @@ class _NumbersModel(Cacheable):
 
         return height
 
+    def _shift_sizes(self, overrides: dict, headers, start: int, count: int) -> None:
+        """
+        Move per-row or per-column sizes when rows or columns are inserted
+        (``count > 0``) or deleted (``count < 0``) at ``start``.
+
+        Sizes are stored by position, both in this session's override dict
+        and in the file's header buckets, so without this a custom height or
+        width stays at its old index while the content moves. Inserted
+        rows or columns take the size of the row or column that was at
+        ``start`` before the shift (as Numbers does), and nothing if there
+        was none. A stored 0.0 is moved verbatim, like any other value.
+        """
+        if count > 0:
+
+            def shifted(index: int) -> int | None:
+                return index + count if index >= start else index
+
+        else:
+            removed = -count
+
+            def shifted(index: int) -> int | None:
+                if index < start:
+                    return index
+                if index < start + removed:
+                    return None
+                return index - removed
+
+        new_overrides = {}
+        for index, value in overrides.items():
+            new_index = shifted(index)
+            if new_index is not None:
+                new_overrides[new_index] = value
+        if count > 0 and start in overrides:
+            for i in range(start, start + count):
+                new_overrides[i] = overrides[start]
+        overrides.clear()
+        overrides.update(new_overrides)
+
+        old_headers = []
+        for header in headers:
+            copy = TSTArchives.HeaderStorageBucket.Header()
+            copy.CopyFrom(header)
+            old_headers.append(copy)
+        clear_field_container(headers)
+        rebuilt = []
+        for header in old_headers:
+            new_index = shifted(header.index)
+            if new_index is not None:
+                header.index = new_index
+                rebuilt.append(header)
+            if count > 0 and header.index == start + count and new_index is not None:
+                for i in range(start, start + count):
+                    inherited = TSTArchives.HeaderStorageBucket.Header()
+                    inherited.CopyFrom(header)
+                    inherited.index = i
+                    rebuilt.append(inherited)
+        for header in sorted(rebuilt, key=lambda h: h.index):
+            headers.append(header)
+
+    def shift_row_sizes(self, table_id: int, start: int, count: int) -> None:
+        base_data_store = self.objects[table_id].base_data_store
+        buckets = self.objects[base_data_store.rowHeaders.buckets[0].identifier]
+        overrides = self._row_heights.setdefault(table_id, {})
+        self._shift_sizes(overrides, buckets.headers, start, count)
+
+    def shift_col_sizes(self, table_id: int, start: int, count: int) -> None:
+        base_data_store = self.objects[table_id].base_data_store
+        buckets = self.objects[base_data_store.columnHeaders.identifier]
+        overrides = self._col_widths.setdefault(table_id, {})
+        self._shift_sizes(overrides, buckets.headers, start, count)
+
     def table_width(self, table_id: int) -> int:
         """Return the width of a table in points."""
         width = 0.0
