@@ -186,6 +186,28 @@ table.write("B2", "Red", style=red_text)
 table.set_cell_style("C2", red_text)
 ```
 
+**Custom fonts**
+
+Fonts that are not shipped with Numbers are rejected by `Style` so that typos are reported.
+To use a font that is installed on the machine that will open the document, register it first
+with [`numbers_parser.register_font()`](api/style.md#numbers_parser.register_font). `name` is the PostScript name stored in the
+document and `family` is the name passed as `Style.font_name`:
+
+```python
+from numbers_parser import Document, Style, register_font
+
+register_font("Roboto-Regular", family="Roboto")
+register_font("Roboto-Light", family="Roboto", style="Light")
+
+doc = Document()
+table = doc.sheets[0].tables[0]
+table.write("A1", "Hello")
+table.set_cell_style("A1", Style(font_name="Roboto"))
+table.write("A2", "Hello")
+table.set_cell_style("A2", Style(font_name=("Roboto", "Light")))
+doc.save("fonts.numbers")
+```
+
 ### Cell Data Formatting
 
 Numbers has two different cell formatting types: data formats and custom formats.
@@ -384,7 +406,7 @@ The following limitations are expected to always remain:
 - Due to a limitation in Python’s [ZipFile](https://docs.python.org/3/library/zipfile.html), Python versions older than 3.11 do not support image filenames with UTF-8 characters [Cell.add_style.bg_image()](https://masaccio.github.io/numbers-parser/api/sheet.html#numbers_parser.Style) returns `None` for such files and issues a `RuntimeWarning` (see [issue 69](https://github.com/masaccio/numbers-parser/issues/69) for details).
 - Due to changes in the format of Numbers documents, decoding of category groups (introduced in `numbers-parser` version 4.16) is supported only for documents created by Numbers 12.0 and later. No warnings are issued for earlier
   Numbers documents.
-- Only standard macOS fonts are not supported. If a document includes a non-standard font, numbers-parser will issue a UnsupportedWarning and default styles to Helvetica Neue. Reading font names from the system would add additional system-specific dependencies to the package and so this is not planned to changed.
+- Only standard macOS fonts are supported by default. If a document includes a non-standard font, numbers-parser will issue a UnsupportedWarning and default styles to Helvetica Neue when it is read. To use a non-standard font in a new [`Style`](api/style.md#numbers_parser.Style), register it first with [`register_font()`](api/style.md#numbers_parser.register_font); the font must be installed on the machine that opens the document. Reading font names from the system would add additional system-specific dependencies to the package and so this is not planned to changed.
 
 ## License
 
