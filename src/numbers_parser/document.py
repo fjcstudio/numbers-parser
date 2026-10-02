@@ -487,6 +487,21 @@ class Sheet:
         image_id = self._model.add_image(self._sheet_id, data, filename, x, y, width, height)
         return Image(self._model, image_id)
 
+    def duplicate_image(self, image: "Image", x: float = None, y: float = None) -> "Image":
+        """
+        Copy an image, optionally moving the copy, and return it.
+
+        The copy shares the original's file and is placed directly behind it.
+        ``x`` and ``y`` default to the original's position.
+        """
+        new_id = self._model.duplicate_image(
+            self._sheet_id,
+            image._image_id,
+            image.x if x is None else x,
+            image.y if y is None else y,
+        )
+        return Image(self._model, new_id)
+
     def remove_image(self, image: "Image") -> None:
         """Remove an image from the sheet. Its file stays in the package."""
         self._model.remove_image(self._sheet_id, image._image_id)

@@ -403,6 +403,29 @@ class _NumbersModel(Cacheable):
         )
         return image_info_id
 
+    def duplicate_image(self, sheet_id: int, image_id: int, x: float, y: float) -> int:
+        """Copy an image to (x, y) and return the copy's object ID.
+
+        The copy shares the source's package file and sits directly behind the
+        source. Its title and caption are new objects, since each image must
+        own them.
+        """
+        source = self.objects[image_id]
+        copy_id, copy = self.objects.create_object_from_dict("Document", {}, type(source))
+        copy.CopyFrom(source)
+        for field in ("title", "caption"):
+            if copy.super.HasField(field):
+                old = self.objects[getattr(copy.super, field).identifier]
+                new_id, new = self.objects.create_object_from_dict("Document", {}, type(old))
+                new.CopyFrom(old)
+                getattr(copy.super, field).identifier = new_id
+        copy.super.geometry.position.x = x
+        copy.super.geometry.position.y = y
+        drawables = self.objects[sheet_id].drawable_infos
+        position = next(i for i, ref in enumerate(drawables) if ref.identifier == image_id)
+        drawables.insert(position, TSPMessages.Reference(identifier=copy_id))
+        return copy_id
+
     def image_ids(self, sheet_id: int) -> list[int]:
         """Return the object IDs of the free-standing images on a sheet, back to front."""
         return [

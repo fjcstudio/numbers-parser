@@ -124,3 +124,19 @@ def test_remove_missing_image_raises():
     sheet.remove_image(image)
     with pytest.raises(IndexError, match="no image with id"):
         sheet.remove_image(image)
+
+
+def test_duplicate_image(configurable_save_file):
+    image_data = open("tests/data/cat.jpg", mode="rb").read()
+    doc = Document()
+    sheet = doc.sheets[0]
+    original = sheet.add_image(image_data, "cat.jpg", x=1.0, y=2.0, width=30.0, height=20.0)
+    copy = sheet.duplicate_image(original, y=500.0)
+    assert (copy.x, copy.y, copy.width, copy.height) == (1.0, 500.0, 30.0, 20.0)
+    assert [i.y for i in sheet.images] == [500.0, 2.0]
+    doc.save(configurable_save_file)
+
+    images = Document(configurable_save_file).sheets[0].images
+    assert [i.y for i in images] == [500.0, 2.0]
+    assert images[0].data == image_data
+    assert images[0].filename == images[1].filename == "cat.jpg"
