@@ -1435,8 +1435,12 @@ class _NumbersModel(Cacheable):
         self.update_cell_styles(table_id, data)
         self.update_cell_borders(table_id, data)
 
-        self.objects.remove_unreferenced_objects()
+        # Clear the reference first so that the ColumnRowUIDMapArchive it
+        # pointed to is already unreferenced when unreferenced objects are
+        # removed; the other order left the orphan in the file until the
+        # following save.
         table_model.ClearField("base_column_row_uids")
+        self.objects.remove_unreferenced_objects()
 
         tile_idx = 0
         max_tile_idx = len(data) >> 8

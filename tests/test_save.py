@@ -400,3 +400,24 @@ def test_save_creates_missing_data_lists(configurable_save_file):
         for t in sheet.tables:
             doc._model.ensure_table_data_lists(t._table_id)
     assert len(doc._model.objects._objects) == before
+
+
+def _uid_map_count(path):
+    doc = Document(path)
+    objects = doc._model.objects._objects
+    return sum(1 for o in objects.values() if type(o).__name__ == "ColumnRowUIDMapArchive")
+
+
+def test_unreferenced_uid_map_removed_on_first_save(configurable_save_file):
+    # recalculate_table_data() clears base_column_row_uids; the archive it
+    # pointed to used to survive one extra save because unreferenced objects
+    # were removed before the reference was cleared.
+    doc = Document()
+    doc.sheets[0].tables[0].write(0, 0, "x")
+    doc.save(configurable_save_file)
+    first = _uid_map_count(configurable_save_file)
+
+    Document(configurable_save_file).save(configurable_save_file)
+    second = _uid_map_count(configurable_save_file)
+
+    assert first == second
