@@ -121,3 +121,18 @@ def test_wide_merge_on_a_table_with_fewer_rows_than_merged_columns(configurable_
     resaved = Document(configurable_save_file)
     resaved_table = resaved.sheets[0].tables[0]
     assert resaved_table.merge_ranges == ["A1:H1"]
+
+
+def test_create_rectangular_merge():
+    doc = Document(num_rows=4, num_cols=4)
+    table = doc.sheets[0].tables[0]
+
+    table.merge_cells("B2:C3")
+
+    assert table.merge_ranges == ["B2:C3"]
+    assert table.cell("B2").is_merged
+    assert table.cell("C2").merge_range == "B2:C3"
+    assert table.cell("B3").merge_range == "B2:C3"
+    assert table.cell("C3").merge_range == "B2:C3"
+    assert table.cell("B2").size == (2, 2)
+    assert table.cell("C2").merge_range == "B2:C3"

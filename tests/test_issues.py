@@ -11,7 +11,7 @@ from numbers_parser import (
     Document,
     EmptyCell,
     ErrorCell,
-    UnsupportedError,
+    Style,
     UnsupportedWarning,
     xl_rowcol_to_cell,
 )
@@ -572,20 +572,6 @@ def test_issue_90(configurable_save_file):
     assert doc.default_table.cell(0, 0).formatted_value == "£1,769,900"
 
 
-def test_issue_93(script_runner):
-    filename = "tests/data/test-issue-93.numbers"
-    with pytest.raises(UnsupportedError) as e:
-        _ = Document(filename)
-    assert str(e.value) == f"{filename}: encrypted documents are not supported"
-
-    ret = script_runner.run(
-        ["cat-numbers", filename],
-        print_result=False,
-    )
-    assert not ret.success
-    assert ret.stderr == f"{filename}: encrypted documents are not supported\n"
-
-
 def test_issue_96():
     doc = Document("tests/data/issue-96.numbers")
     table = doc.default_table
@@ -596,9 +582,10 @@ def test_issue_96():
 def test_issue_99():
     doc = Document("tests/data/issue-99.numbers")
     table = doc.default_table
-    cell = table.cell(0, 0)
-    with pytest.warns(UnsupportedWarning) as record:
-        style = cell.style
+    with pytest.warns(UnsupportedWarning) as record:  # noqa: PT031
+        style = table.cell(1, 0).style
+        # Second time doesn't warn
+        style = table.cell(0, 0).style
     assert len(record) == 1
     assert (
         str(
@@ -739,3 +726,38 @@ def test_issue_152(configurable_save_file):
     table = doc.sheets[0].tables[0]
     assert [table.row_height(x) for x in range(table.num_rows)] == [20, 30, 30, 30, 20]
     assert [table.col_width(x) for x in range(table.num_cols)] == [98, 88, 88, 88, 98]
+
+
+def test_issue_174(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    table = sheet.tables[0]
+
+    styles = [
+        Style(font_name="Helvetica Neue", bold=False, italic=False, font_size=16.0, name="style_a"),
+        Style(font_name="Helvetica Neue", bold=True, italic=False, font_size=16.0, name="style_b"),
+        Style(font_name="Helvetica Neue", bold=False, italic=True, font_size=16.0, name="style_c"),
+        Style(font_name="Helvetica Neue", bold=True, italic=True, font_size=16.0, name="style_d"),
+    ]
+
+    for i, style in enumerate(styles):
+        table.write(0, i, f"cell{i}")
+        table.set_cell_style(0, i, style)
+
+    with pytest.raises(IndexError) as e:
+        table.set_cell_style(1, 0, Style(font_name="UnknownFont"))
+    assert "font 'UnknownFont' does not exist" in str(e)
+
+    table.write(1, 0, "Avenir")
+    table.set_cell_style(1, 0, Style(font_name=("Avenir", "Heavy Oblique")))
+    doc.save(configurable_save_file)
+
+    doc2 = Document(configurable_save_file)
+    table2 = doc2.sheets[0].tables[0]
+    for i in range(4):
+        cell = table2.cell(0, i)
+        assert cell.style.name == styles[i].name
+        assert cell.style.font_name == styles[i].font_name
+        assert cell.style.bold == styles[i].bold
+        assert cell.style.italic == styles[i].italic
+        assert cell.style.font_size == styles[i].font_size

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator  # noqa: TC003
+from datetime import datetime, timedelta  # noqa: TC003
 from pathlib import Path
-from typing import TYPE_CHECKING
 from warnings import warn
 
 from numbers_parser.cell import (
@@ -33,11 +34,10 @@ from numbers_parser.model import _NumbersModel
 from numbers_parser.numbers_cache import Cacheable
 from numbers_parser.xrefs import xl_cell_to_rowcol, xl_range
 
-if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Iterator
-    from datetime import datetime, timedelta
-
 __all__ = ["Document", "Sheet", "Table"]
+
+HORIZONTAL_BORDER_SIDES = ("top", "bottom")
+VERTICAL_BORDER_SIDES = ("left", "right")
 
 
 class Document:
@@ -64,6 +64,8 @@ class Document:
         Number of rows in the first table of a new document.
     num_cols: int, optional, default: 8
         Number of columns in the first table of a new document.
+    password: str, optional, default: None
+        Password for encrypted documents
 
     Raises
     ------
@@ -85,8 +87,9 @@ class Document:
         num_header_cols: int | None = 1,
         num_rows: int | None = DEFAULT_ROW_COUNT,
         num_cols: int | None = DEFAULT_COLUMN_COUNT,
+        password: str | None = None,
     ) -> None:
-        self._model = _NumbersModel(None if filename is None else Path(filename))
+        self._model = _NumbersModel(None if filename is None else Path(filename), password)
         refs = self._model.sheet_ids()
         self._sheets = ItemsList(self._model, refs, Sheet)
 
@@ -124,7 +127,13 @@ class Document:
         """
         return self._model.custom_formats
 
-    def save(self, filename: str | Path, package: bool = False) -> None:
+    def save(
+        self,
+        filename: str | Path,
+        package: bool = False,
+        password: str | None = None,
+        hint: str = "No hint",
+    ) -> None:
         """
         Save the document in the specified filename.
 
@@ -136,6 +145,10 @@ class Document:
         package: bool, optional, default: False
             If ``True``, create a package format document (a folder) instead
             of a single file
+        password: str, optional, default: None
+            If not `None`, the document is encrypted using the password.
+        hint: str, optional, default: "No hint"
+            The hint stored with an encrypted document.
 
         Raises
         ------
@@ -155,7 +168,7 @@ class Document:
                     )
                 else:
                     self._model.recalculate_table_data(table._table_id, table._data)
-        self._model.save(Path(filename), package)
+        self._model.save(Path(filename), package, password, hint)
 
     def add_sheet(
         self,
@@ -177,7 +190,7 @@ class Document:
         table_name: *str*, *optional*, *default*: ``Table 1``
             The name of the table created in the new sheet
         num_rows: int, optional, default: 12
-            The number of columns in the newly created table
+            The number of rows in the newly created table
         num_cols: int, optional, default: 8
             The number of columns in the newly created table
 
@@ -275,7 +288,7 @@ class Document:
             long_date = doc.add_custom_format(
                 name="Long Date",
                 type="datetime",
-                date_time_format="EEEE, d MMMM yyyy"
+                format="EEEE, d MMMM yyyy"
             )
             table.set_cell_formatting("C1", "custom", format=long_date)
 
@@ -388,8 +401,8 @@ class Sheet:
 
         .. code:: python
 
-            (x, y) = sheet.table[0].coordinates
-            y += sheet.table[0].height + 200.0
+            (x, y) = sheet.tables[0].coordinates
+            y += sheet.tables[0].height + 200.0
             new_table = sheet.add_table("Offset Table", x, y)
 
         Parameters
@@ -402,7 +415,7 @@ class Sheet:
             The y offset for the table in points.
         num_rows: int, optional, default: 12
             The number of rows for the new table.
-        num_cols: int, optional, default: 10
+        num_cols: int, optional, default: 8
             The number of columns for the new table.
         num_header_rows: int, optional, default: 1
             The number of header rows for the new table.
@@ -651,11 +664,11 @@ class Table(Cacheable):
         return self._model.col_width(self._table_id, col, width)
 
     @property
-    def coordinates(self) -> tuple[float]:
-        """Tuple[float]: The table's x, y offsets in points."""
+    def coordinates(self) -> tuple[float, float]:
+        """tuple[float, float]: The table's x and y offsets in points."""
         return self._model.table_coordinates(self._table_id)
 
-    def rows(self, values_only: bool = False) -> list[list[Cell]] | list[list[str]]:
+    def rows(self, values_only: bool = False) -> list[list[Cell]] | list[list[object]]:
         """
         Return all rows of cells for the Table.
 
@@ -666,8 +679,8 @@ class Table(Cacheable):
 
         Returns
         -------
-        List[List[Cell]] | List[List[str]]:
-            List of rows; each row is a list of :class:`Cell` objects, or string values.
+        List[List[Cell]] | List[List[object]]:
+            List of rows; each row is a list of :class:`Cell` objects, or cell values.
 
         """
         if values_only:
@@ -780,11 +793,11 @@ class Table(Cacheable):
         min_row: int, optional
             Starting row number (zero indexed), or ``0`` if ``None``.
         max_row: int, optional
-            End row number (zero indexed), or all rows if ``None``.
+            Inclusive end row number (zero indexed), or all rows if ``None``.
         min_col: int, optional
             Starting column number (zero indexed) or ``0`` if ``None``.
         max_col: int, optional
-            End column number (zero indexed), or all columns if ``None``.
+            Inclusive end column number (zero indexed), or all columns if ``None``.
         values_only: bool, optional
             If ``True``, yield cell values rather than :class:`Cell` objects
 
@@ -815,13 +828,13 @@ class Table(Cacheable):
         if min_row < 0:
             msg = f"row {min_row} out of range"
             raise IndexError(msg)
-        if max_row > self.num_rows:
+        if max_row >= self.num_rows:
             msg = f"row {max_row} out of range"
             raise IndexError(msg)
         if min_col < 0:
             msg = f"column {min_col} out of range"
             raise IndexError(msg)
-        if max_col > self.num_cols:
+        if max_col >= self.num_cols:
             msg = f"column {max_col} out of range"
             raise IndexError(msg)
 
@@ -857,11 +870,11 @@ class Table(Cacheable):
         min_col: int, optional
             Starting column number (zero indexed) or ``0`` if ``None``.
         max_col: int, optional
-            End column number (zero indexed), or all columns if ``None``.
+            Inclusive end column number (zero indexed), or all columns if ``None``.
         min_row: int, optional
             Starting row number (zero indexed), or ``0`` if ``None``.
         max_row: int, optional
-            End row number (zero indexed), or all rows if ``None``.
+            Inclusive end row number (zero indexed), or all rows if ``None``.
         values_only: bool, optional
             If ``True``, yield cell values rather than :class:`Cell` objects.
 
@@ -892,13 +905,13 @@ class Table(Cacheable):
         if min_row < 0:
             msg = f"row {min_row} out of range"
             raise IndexError(msg)
-        if max_row > self.num_rows:
+        if max_row >= self.num_rows:
             msg = f"row {max_row} out of range"
             raise IndexError(msg)
         if min_col < 0:
             msg = f"column {min_col} out of range"
             raise IndexError(msg)
-        if max_col > self.num_cols:
+        if max_col >= self.num_cols:
             msg = f"column {max_col} out of range"
             raise IndexError(msg)
 
@@ -926,8 +939,14 @@ class Table(Cacheable):
             (row, col) = args[0:2]
             values = args[2:]
 
+        if row < 0:
+            msg = f"row {row} out of range"
+            raise IndexError(msg)
         if row >= MAX_ROW_COUNT:
             msg = f"{row} exceeds maximum row {MAX_ROW_COUNT - 1}"
+            raise IndexError(msg)
+        if col < 0:
+            msg = f"column {col} out of range"
             raise IndexError(msg)
         if col >= MAX_COL_COUNT:
             msg = f"{col} exceeds maximum column {MAX_COL_COUNT - 1}"
@@ -1008,8 +1027,26 @@ class Table(Cacheable):
             self.set_cell_style(row, col, style)
 
     def set_cell_style(self, *args) -> None:
+        """
+        Set a cell's style by coordinate and style object or name.
+
+        The coordinate may be a zero-based row and column pair or an A1 reference.
+        A :class:`Style` object is registered with the document; a string selects an
+        existing named style.
+
+        Raises
+        ------
+        IndexError:
+            If a named style does not exist.
+        TypeError:
+            If the style is neither a :class:`Style` nor a style name.
+
+        """
         (row, col, style) = self._validate_cell_coords(*args)
         if isinstance(style, Style):
+            if style.name is None:
+                style.name = self._model.custom_style_name()
+            self._model.styles[style.name] = style
             self._data[row][col]._style = style
         elif isinstance(style, str):
             if style not in self._model.styles:
@@ -1087,7 +1124,7 @@ class Table(Cacheable):
         Parameters
         ----------
         num_rows: int, optional, default: 1
-            The number of rows to add to the table.
+            The number of rows to add to the table. Must be positive.
         start_row: int, optional, default: None
             The start row number (zero indexed), or ``None`` to add a row to
             the end of the table.
@@ -1110,6 +1147,12 @@ class Table(Cacheable):
             If the default value is unsupported by :py:meth:`numbers_parser.Table.write`.
 
         """
+        if not isinstance(num_rows, int) or num_rows < 1:
+            msg = "Number of rows must be a positive integer"
+            raise ValueError(msg)
+        if num_rows > MAX_ROW_COUNT - self.num_rows:
+            msg = f"Number of rows cannot exceed {MAX_ROW_COUNT}"
+            raise ValueError(msg)
         if start_row is not None and (start_row < 0 or start_row >= self.num_rows):
             msg = "Row number not in range for table"
             raise IndexError(msg)
@@ -1165,7 +1208,7 @@ class Table(Cacheable):
         Parameters
         ----------
         num_cols: int, optional, default: 1
-            The number of columns to add to the table.
+            The number of columns to add to the table. Must be positive.
         start_col: int, optional, default: None
             The start column number (zero indexed), or ``None`` to add a column to
             the end of the table.
@@ -1188,6 +1231,12 @@ class Table(Cacheable):
             If the default value is unsupported by :py:meth:`numbers_parser.Table.write`.
 
         """
+        if not isinstance(num_cols, int) or num_cols < 1:
+            msg = "Number of columns must be a positive integer"
+            raise ValueError(msg)
+        if num_cols > MAX_COL_COUNT - self.num_cols:
+            msg = f"Number of columns cannot exceed {MAX_COL_COUNT}"
+            raise ValueError(msg)
         if start_col is not None and (start_col < 0 or start_col >= self.num_cols):
             msg = "Column number not in range for table"
             raise IndexError(msg)
@@ -1232,16 +1281,11 @@ class Table(Cacheable):
         Parameters
         ----------
         num_rows: int, optional, default: 1
-            The number of rows to add to the table.
+            The number of rows to delete from the table. Must be positive and no
+            greater than the current number of rows.
         start_row: int, optional, default: None
             The start row number (zero indexed), or ``None`` to delete rows
             from the end of the table.
-
-        Warns
-        -----
-        RuntimeWarning:
-            If the default value is a float that is rounded to the maximum number
-            of supported digits.
 
         Raises
         ------
@@ -1249,6 +1293,12 @@ class Table(Cacheable):
             If the start_row is out of range for the table.
 
         """
+        if not isinstance(num_rows, int) or num_rows < 1:
+            msg = "Number of rows must be a positive integer"
+            raise ValueError(msg)
+        if num_rows > self.num_rows:
+            msg = "Cannot delete more rows than the table contains"
+            raise ValueError(msg)
         if start_row is not None and (start_row < 0 or start_row >= self.num_rows):
             msg = "Row number not in range for table"
             raise IndexError(msg)
@@ -1282,17 +1332,26 @@ class Table(Cacheable):
         Parameters
         ----------
         num_cols: int, optional, default: 1
-            The number of columns to add to the table.
+            The number of columns to delete from the table. Must be positive and no
+            greater than the current number of columns.
         start_col: int, optional, default: None
-            The start column number (zero indexed), or ``None`` to add delete columns
+            The start column number (zero indexed), or ``None`` to delete columns
             from the end of the table.
 
         Raises
         ------
         IndexError:
             If the start_col is out of range for the table.
+        ValueError:
+            If ``num_cols`` is not positive or exceeds the number of columns.
 
         """
+        if not isinstance(num_cols, int) or num_cols < 1:
+            msg = "Number of columns must be a positive integer"
+            raise ValueError(msg)
+        if num_cols > self.num_cols:
+            msg = "Cannot delete more columns than the table contains"
+            raise ValueError(msg)
         if start_col is not None and (start_col < 0 or start_col >= self.num_cols):
             msg = "Column number not in range for table"
             raise IndexError(msg)
@@ -1346,8 +1405,10 @@ class Table(Cacheable):
 
             merge_cells = self._model.merge_cells(self._table_id)
             merge_cells.add_anchor(row_start, col_start, (num_rows, num_cols))
-            for row in range(row_start + 1, row_end + 1):
-                for col in range(col_start + 1, col_end + 1):
+            for row in range(row_start, row_end + 1):
+                for col in range(col_start, col_end + 1):
+                    if row == row_start and col == col_start:
+                        continue
                     self._data[row][col] = Cell._merged_cell(self._table_id, row, col, self._model)
                     merge_cells.add_reference(row, col, (row_start, col_start, row_end, col_end))
 
@@ -1392,6 +1453,9 @@ class Table(Cacheable):
         TypeError:
             If an invalid number of arguments is passed or if the types of the arguments
             are invalid.
+        IndexError:
+            If the length of the stroke extends the border beyond the last row or column
+            of the table.
 
         Warns
         -----
@@ -1442,17 +1506,25 @@ class Table(Cacheable):
             )
             return
 
-        self._model.extract_strokes(self._table_id)
-
-        if side in ["top", "bottom"]:
-            for border_col_num in range(col, col + length):
-                self._model.set_cell_border(self._table_id, row, border_col_num, side, border_value)
-        elif side in ["left", "right"]:
-            for border_row_num in range(row, row + length):
-                self._model.set_cell_border(self._table_id, border_row_num, col, side, border_value)
-        else:
+        if side not in (*HORIZONTAL_BORDER_SIDES, *VERTICAL_BORDER_SIDES):
             msg = "side must be a valid border segment"
             raise TypeError(msg)
+
+        if side in HORIZONTAL_BORDER_SIDES and col + length > self.num_cols:
+            msg = f"column {col + length - 1} out of range (table has {self.num_cols} columns)"
+            raise IndexError(msg)
+        if side in VERTICAL_BORDER_SIDES and row + length > self.num_rows:
+            msg = f"row {row + length - 1} out of range (table has {self.num_rows} rows)"
+            raise IndexError(msg)
+
+        self._model.extract_strokes(self._table_id)
+
+        if side in HORIZONTAL_BORDER_SIDES:
+            for border_col_num in range(col, col + length):
+                self._model.set_cell_border(self._table_id, row, border_col_num, side, border_value)
+        else:
+            for border_row_num in range(row, row + length):
+                self._model.set_cell_border(self._table_id, border_row_num, col, side, border_value)
 
     def set_cell_formatting(self, *args: str, **kwargs) -> None:
         r"""
@@ -1532,7 +1604,7 @@ class Table(Cacheable):
               * ``"popup"``: A menu of options.
 
         :``"base"``:
-            * **base_use_minus_sign** (*int, optional, default: 10*) - The integer
+            * **base** (*int, optional, default: 10*) - The integer
               base to represent the number from 2-36.
             * **base_use_minus_sign** (*bool, optional, default: True*) - If ``True``
               use a standard minus sign, otherwise format as two's compliment (only
@@ -1589,12 +1661,12 @@ class Table(Cacheable):
             * **control_format** (*ControlFormattingType, optional, default: ControlFormattingType.NUMBER*) - the format
                 of the data in the slider. Valid options are ``"base"``, ``"currency"``,
                 ``"datetime"``, ``"fraction"``, ``"percentage"``, ``"number"``,
-                or ``"scientific". Each format allows additional parameters identical to those
+                or ``"scientific"``. Each format allows additional parameters identical to those
                 available for the formats themselves. For example, a slider using fractions
                 is configured with ``fraction_accuracy``.
-            * **increment** (*float, optional, default: 1*) - the slider's minimum value
+            * **increment** (*float, optional, default: 1*) - increment value for the slider
             * **maximum** (*float, optional, default: 100*) - the slider's maximum value
-            * **minimum** (*float, optional, default: 1*) - increment value for the slider
+            * **minimum** (*float, optional, default: 1*) - the slider's minimum value
 
         :`"stepper"``:
             * **control_format** (*ControlFormattingType, optional, default: ControlFormattingType.NUMBER*) - the format
@@ -1603,9 +1675,9 @@ class Table(Cacheable):
                 or ``"scientific"``. Each format allows additional parameters identical to those
                 available for the formats themselves. For example, a stepper using fractions
                 is configured with ``fraction_accuracy``.
-            * **increment** (*float, optional, default: 1*) - the stepper's minimum value
+            * **increment** (*float, optional, default: 1*) - increment value for the stepper
             * **maximum** (*float, optional, default: 100*) - the stepper's maximum value
-            * **minimum** (*float, optional, default: 1*) - increment value for the stepper
+            * **minimum** (*float, optional, default: 1*) - the stepper's minimum value
 
         :`"popup"``:
             * **popup_values** (*List[str|int|float], optional, default: None*) - values

@@ -58,7 +58,7 @@ def test_row_read_survives_a_sparsified_tile_with_stale_row_headers(configurable
     doc.save(configurable_save_file)
 
     # Fresh, empty-cache model -- nothing has read via storage_buffer() yet.
-    model = _NumbersModel(configurable_save_file)
+    model = _NumbersModel(configurable_save_file, None)
     table_id = model.table_ids(model.sheet_ids()[0])[0]
     num_rows = model.number_of_rows(table_id)
 
@@ -96,7 +96,7 @@ def test_row_read_survives_a_dropped_all_blank_tile(configurable_save_file):
     table.write(280, 0, "far row content")
     doc.save(configurable_save_file)
 
-    model = _NumbersModel(configurable_save_file)
+    model = _NumbersModel(configurable_save_file, None)
     table_ids = model.table_ids(model.sheet_ids()[0])
     table_id = next(t for t in table_ids if model.table_name(t) == "Big")
     num_rows = model.number_of_rows(table_id)
@@ -131,7 +131,7 @@ def test_duplicate_rowinfo_for_same_row_warns(configurable_save_file):
     table.write(2, 0, "original row 2 content")
     doc.save(configurable_save_file)
 
-    model = _NumbersModel(configurable_save_file)
+    model = _NumbersModel(configurable_save_file, None)
     table_id = model.table_ids(model.sheet_ids()[0])[0]
     bds = model.objects[table_id].base_data_store
     tile = model.objects[bds.tiles.tiles[0].tile.identifier]

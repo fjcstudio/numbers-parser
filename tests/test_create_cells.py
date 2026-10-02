@@ -52,6 +52,17 @@ def test_edit_cell_values(configurable_save_file):
     assert table.cell(5, 5).value == "7890"
 
 
+def test_negative_cell_coordinates_are_rejected():
+    doc = Document()
+    table = doc.default_table
+
+    with pytest.raises(IndexError, match="row -1 out of range"):
+        table.write(-1, 0, "negative row")
+
+    with pytest.raises(IndexError, match="column -1 out of range"):
+        table.write(0, -1, "negative column")
+
+
 def test_large_table(configurable_save_file):
     doc = Document()
     sheets = doc.sheets
@@ -60,9 +71,17 @@ def test_large_table(configurable_save_file):
     for i in range(300):
         table.write(i, i, "wide")
 
+    with pytest.raises(ValueError) as e:  # noqa: PT011
+        table.add_row(MAX_ROW_COUNT - table.num_rows + 1)
+    assert "rows cannot exceed" in str(e.value)
+
     with pytest.raises(IndexError) as e:
         table.write(MAX_ROW_COUNT, 0, "")
     assert "exceeds maximum row" in str(e.value)
+
+    with pytest.raises(ValueError) as e:  # noqa: PT011
+        table.add_column(MAX_COL_COUNT - table.num_cols + 1)
+    assert "columns cannot exceed" in str(e.value)
 
     with pytest.raises(IndexError) as e:
         table.write(0, MAX_COL_COUNT, "")

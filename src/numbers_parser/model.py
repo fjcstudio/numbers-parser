@@ -52,6 +52,8 @@ from numbers_parser.constants import (
     DEFAULT_TILE_SIZE,
     DOCUMENT_ID,
     EPOCH,
+    FONT_FAMILY_DEFAULT,
+    FONT_MAP,
     FORMAT_TYPE_MAP,
     MAX_TILE_SIZE,
     PACKAGE_ID,
@@ -73,7 +75,6 @@ from numbers_parser.generated import TSPMessages_pb2 as TSPMessages
 from numbers_parser.generated import TSSArchives_pb2 as TSSArchives
 from numbers_parser.generated import TSTArchives_pb2 as TSTArchives
 from numbers_parser.generated import TSWPArchives_pb2 as TSWPArchives
-from numbers_parser.generated.fontmap import FONT_NAME_TO_FAMILY
 from numbers_parser.generated.TSDArchives_pb2 import (
     StrokePatternArchive as StrokePattern,
 )
@@ -87,17 +88,6 @@ from numbers_parser.xrefs import CellRange, ScopedNameRefCache
 
 logger = logging.getLogger(__name__)
 debug = logger.debug
-
-
-def create_font_name_map(font_map: dict) -> dict:
-    new_font_map = {}
-    for k, v in font_map.items():
-        if v not in new_font_map:
-            new_font_map[v] = k
-    return new_font_map
-
-
-FONT_FAMILY_TO_NAME = create_font_name_map(FONT_NAME_TO_FAMILY)
 
 
 class MergeCells:
@@ -277,10 +267,10 @@ class _NumbersModel(Cacheable):
     Not to be used in application code.
     """
 
-    def __init__(self, filepath: Path) -> None:
+    def __init__(self, filepath: Path, password: str | None) -> None:
         if filepath is None:
             filepath = Path(DEFAULT_DOCUMENT)
-        self.objects = ObjectStore(filepath)
+        self.objects = ObjectStore(filepath, password)
         self._merge_cells = defaultdict(MergeCells)
         self._row_heights = {}
         self._col_widths = {}
@@ -307,8 +297,8 @@ class _NumbersModel(Cacheable):
         self.missing_fonts = {}
         self.calculate_table_uuid_map()
 
-    def save(self, filepath: Path, package: bool) -> None:
-        self.objects.save(filepath, package)
+    def save(self, filepath: Path, package: bool, password: str, hint: str) -> None:
+        self.objects.save(filepath, package, password, hint)
 
     def find_refs(self, ref: str) -> list:
         return self.objects.find_refs(ref)
@@ -2103,13 +2093,14 @@ class _NumbersModel(Cacheable):
                 ),
                 font_color=self.cell_font_color(v["obj"]),
                 font_size=self.cell_font_size(v["obj"]),
-                font_name=self.cell_font_name(v["obj"]),
+                font_name=self.cell_font_family(v["obj"]),
                 bold=self.cell_is_bold(v["obj"]),
                 italic=self.cell_is_italic(v["obj"]),
                 underline=self.cell_is_underline(v["obj"]),
                 strikethrough=self.cell_is_strikethrough(v["obj"]),
                 name=self.cell_style_name(v["obj"]),
                 _text_style_obj_id=v["id"],
+                _font_details=self.cell_font_details(v["obj"]),
             )
             for k, v in presets_map.items()
         }
@@ -2118,24 +2109,6 @@ class _NumbersModel(Cacheable):
             style.__dict__["_update_text_style"] = False
             style.__dict__["_update_cell_style"] = False
         return styles
-
-    def _paragraph_style_font_name(self, font_name: str) -> str:
-        """
-        Return the on-disk font name for a style's own font_name,
-        falling back to DEFAULT_FONT (with a one-time-per-font warning)
-        for a custom/unrecognised font family -- the save-side mirror of
-        the fallback cell_font_name() already has for the read side.
-        """
-        if font_name not in FONT_FAMILY_TO_NAME:
-            if font_name not in self.missing_fonts:
-                warn(
-                    f"Custom font '{font_name}' unsupported; falling back to {DEFAULT_FONT}",
-                    UnsupportedWarning,
-                    stacklevel=3,
-                )
-                self.missing_fonts[font_name] = True
-            return FONT_FAMILY_TO_NAME[DEFAULT_FONT]
-        return FONT_FAMILY_TO_NAME[font_name]
 
     def add_paragraph_style(self, style: Style) -> int:
         if style.underline:
@@ -2165,12 +2138,12 @@ class _NumbersModel(Cacheable):
                         "a": 1.0,
                         "rgbspace": "srgb",
                     },
-                    "bold": style.bold,
-                    "italic": style.italic,
+                    "bold": style.bold | style._font_details["bold"],
+                    "italic": style.italic | style._font_details["italic"],
                     "underline": underline,
                     "strikethru": strikethru,
                     "font_size": style.font_size,
-                    "font_name": self._paragraph_style_font_name(style.font_name),
+                    "font_name": style._font_details["name"],
                     "tsd_fill": {
                         "color": {
                             "model": "rgb",
@@ -2225,7 +2198,7 @@ class _NumbersModel(Cacheable):
         style_obj.char_properties.underline = underline
         style_obj.char_properties.strikethru = strikethru
         style_obj.char_properties.font_size = style.font_size
-        style_obj.char_properties.font_name = self._paragraph_style_font_name(style.font_name)
+        style_obj.char_properties.font_name = style._font_details["name"]
         style_obj.char_properties.tsd_fill.color.r = style.font_color.r / 255
         style_obj.char_properties.tsd_fill.color.g = style.font_color.g / 255
         style_obj.char_properties.tsd_fill.color.b = style.font_color.b / 255
@@ -2670,13 +2643,13 @@ class _NumbersModel(Cacheable):
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
         return self.char_property(style, "font_size")
 
-    def cell_font_name(self, obj: Cell | object) -> str:
+    def cell_font_family(self, obj: Cell | object) -> str:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
         font_name = self.char_property(style, "font_name")
         if not font_name:
             # Unset on a root style with no parent to inherit from
             return DEFAULT_FONT
-        if font_name not in FONT_NAME_TO_FAMILY:
+        if font_name not in FONT_MAP:
             if font_name not in self.missing_fonts:
                 warn(
                     f"Custom font '{font_name}' unsupported; falling back to {DEFAULT_FONT}",
@@ -2686,7 +2659,14 @@ class _NumbersModel(Cacheable):
                 self.missing_fonts[font_name] = True
             return DEFAULT_FONT
 
-        return FONT_NAME_TO_FAMILY[font_name]
+        return FONT_MAP[font_name]["family"]
+
+    def cell_font_details(self, obj: Cell | object) -> dict[str, str]:
+        style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
+        font_name = self.char_property(style, "font_name")
+        if font_name not in FONT_MAP:
+            return FONT_FAMILY_DEFAULT[DEFAULT_FONT]
+        return FONT_MAP[font_name]
 
     def cell_first_indent(self, obj: Cell | object) -> float:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
@@ -2842,7 +2822,7 @@ class _NumbersModel(Cacheable):
     def extract_strokes(self, table_id: int) -> None:
         table_obj = self.objects[table_id]
         stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
+        if stroke_sidecar_id == 0:  # pragma: no cover
             return
         sidecar_obj = self.objects[stroke_sidecar_id]
         strokes = []

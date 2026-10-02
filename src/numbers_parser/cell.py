@@ -35,6 +35,8 @@ from numbers_parser.constants import (
     DEFAULT_TEXT_WRAP,
     EMPTY_STORAGE_BUFFER,
     EPOCH,
+    FONT_FAMILY_DEFAULT,
+    FONT_TUPLE_MAP,
     MAX_BASE,
     MAX_SIGNIFICANT_DIGITS,
     PACKAGE_ID,
@@ -142,6 +144,8 @@ class BackgroundImage:
 
 
 class HorizontalJustification(IntEnum):
+    """Horizontal alignment values accepted by :class:`Alignment`."""
+
     LEFT = ParagraphStyle.TextAlignmentType.TATvalue0
     RIGHT = ParagraphStyle.TextAlignmentType.TATvalue1
     CENTER = ParagraphStyle.TextAlignmentType.TATvalue2
@@ -150,6 +154,8 @@ class HorizontalJustification(IntEnum):
 
 
 class VerticalJustification(IntEnum):
+    """Vertical alignment values accepted by :class:`Alignment`."""
+
     TOP = ParagraphStyle.DeprecatedParagraphBorderType.PBTvalue0
     MIDDLE = ParagraphStyle.DeprecatedParagraphBorderType.PBTvalue1
     BOTTOM = ParagraphStyle.DeprecatedParagraphBorderType.PBTvalue2
@@ -178,6 +184,13 @@ class _Alignment(NamedTuple):
 
 
 class Alignment(_Alignment):
+    """
+    Pair of horizontal and vertical cell alignment values.
+
+    Values may be supplied as the corresponding enum members or as the strings
+    accepted by Numbers, such as ``"center"`` and ``"middle"``.
+    """
+
     def __new__(cls, horizontal=DEFAULT_ALIGNMENT[0], vertical=DEFAULT_ALIGNMENT[1]):
         if isinstance(horizontal, str):
             horizontal = horizontal.lower()
@@ -195,12 +208,18 @@ class Alignment(_Alignment):
 
         return super(_Alignment, cls).__new__(cls, (horizontal, vertical))
 
+    def __repr__(self):
+        return f"[{self.horizontal.name.lower()},{self.vertical.name.lower()}]"
+
+    def __str__(self):
+        return repr(self)
+
 
 DEFAULT_ALIGNMENT_CLASS = Alignment(*DEFAULT_ALIGNMENT)
 
 
 class RGB(NamedTuple):
-    """A color in RGB."""
+    """A color represented by red, green, and blue integer components."""
 
     r: int
     g: int
@@ -220,32 +239,33 @@ class Style:
     ----------
     alignment: Alignment, optional, default: Alignment("auto", "top")
         Horizontal and vertical alignment of the cell
-    bg_color: RGB | List[RGB], optional, default: RGB(0, 0, 0)
+    bg_color: RGB | List[RGB], optional, default: None
         Background color or list of colors for gradients
     bold: bool, optional, default: False
         ``True`` if the cell font is bold
-    font_color: RGB, optional, default: RGB(0, 0, 0)) – Font color
+    font_color: RGB, optional, default: RGB(0, 0, 0)
+        Font color
     font_size: float, optional, default: DEFAULT_FONT_SIZE
         Font size in points
-    font_name: str, optional, default: DEFAULT_FONT_SIZE
-        Font name
+    font_name: str | tuple[str, str], optional, default: DEFAULT_FONT
+        Font name or a tuple of font family and style
     italic: bool, optional, default: False
         ``True`` if the cell font is italic
     name: str, optional
         Style name
-    underline: bool, optional, default: False) – True if the
-        cell font is underline
-    strikethrough: bool, optional, default: False) – True if
-        the cell font is strikethrough
-    first_indent: float, optional, default: 0.0) – First line
-        indent in points
+    underline: bool, optional, default: False
+        ``True`` if the cell font is underlined
+    strikethrough: bool, optional, default: False
+        ``True`` if the cell font uses strikethrough
+    first_indent: float, optional, default: 0.0
+        First-line indent in points
     left_indent: float, optional, default: 0.0
         Left indent in points
     right_indent: float, optional, default: 0.0
         Right indent in points
     text_inset: float, optional, default: DEFAULT_TEXT_INSET
         Text inset in points
-    text_wrap: str, optional, default: True
+    text_wrap: bool, optional, default: True
         ``True`` if text wrapping is enabled
 
     Raises
@@ -273,6 +293,7 @@ class Style:
     text_inset: float = DEFAULT_TEXT_INSET
     text_wrap: bool = DEFAULT_TEXT_WRAP
     name: str = None
+    _font_details: dict = None
     _text_style_obj_id: int = None
     _cell_style_obj_id: int = None
     _update_cell_style: bool = False
@@ -318,7 +339,7 @@ class Style:
             bg_color=model.cell_bg_color(cell),
             font_color=model.cell_font_color(cell),
             font_size=model.cell_font_size(cell),
-            font_name=model.cell_font_name(cell),
+            font_name=model.cell_font_family(cell),
             bold=model.cell_is_bold(cell),
             italic=model.cell_is_italic(cell),
             strikethrough=model.cell_is_strikethrough(cell),
@@ -329,6 +350,7 @@ class Style:
             right_indent=model.cell_right_indent(cell),
             text_inset=model.cell_text_inset(cell),
             text_wrap=model.cell_text_wrap(cell),
+            _font_details=model.cell_font_details(cell),
             _text_style_obj_id=model.text_style_object_id(cell),
             _cell_style_obj_id=model.cell_style_object_id(cell),
         )
@@ -342,12 +364,21 @@ class Style:
         self.bg_color = rgb_color(self.bg_color)
         self.font_color = rgb_color(self.font_color)
 
-        if not isinstance(self.font_size, float):
+        if not isinstance(self.font_size, (float, int)):
             msg = "size must be a float number of points"
             raise TypeError(msg)
-        if not isinstance(self.font_name, str):
-            msg = "font name must be a string"
+
+        if not isinstance(self.font_name, (str, tuple)):
+            msg = "font name must be a string or name/style tuple"
             raise TypeError(msg)
+
+        if isinstance(self.font_name, str) and self.font_name in FONT_FAMILY_DEFAULT:
+            self._font_details = FONT_FAMILY_DEFAULT[self.font_name]
+        elif isinstance(self.font_name, tuple) and self.font_name in FONT_TUPLE_MAP:
+            self._font_details = FONT_TUPLE_MAP[self.font_name]
+        else:
+            msg = f"font '{self.font_name}' does not exist"
+            raise IndexError(msg)
 
         for attr in ["bold", "italic", "underline", "strikethrough"]:
             if not isinstance(getattr(self, attr), bool):
@@ -429,7 +460,7 @@ class Border:  # noqa: PLW1641
     Parameters
     ----------
     width: float, optional, default: 0.35
-        Number of rows in the first table of a new document.
+        Line width in points.
     color: RGB, optional, default: RGB(0, 0, 0)
         The line color for the border if present
     style: BorderType, optional, default: ``None``
@@ -498,6 +529,14 @@ class Border:  # noqa: PLW1641
 
 
 class CellBorder:
+    """
+    The four visible border segments associated with a cell.
+
+    A segment is ``None`` when it is unset or hidden by a merged-cell edge.
+    Border segments can be read directly; use :meth:`Table.set_cell_border`
+    to change them.
+    """
+
     def __init__(
         self,
         top_merged: bool = False,
@@ -686,7 +725,7 @@ class Cell(CellStorageFlags, Cacheable):
         Cells that contain bulleted or numbered lists are identified
         by :py:attr:`numbers_parser.Cell.is_bulleted`. For these cells,
         :py:attr:`numbers_parser.Cell.value` returns the whole cell contents.
-        Bullets can also be extracted into a list of paragraphs cell without the
+        Bullets can also be extracted into a list of paragraphs without the
         bullet or numbering character. Newlines are not included in the
         bullet list.
 
@@ -703,7 +742,6 @@ class Cell(CellStorageFlags, Cacheable):
             else:
                 bullets = ["* " + s for s in table.cell(0, 1).bullets]
                 print("\n".join(bullets))
-                    return None
 
         """
         return None
@@ -1395,7 +1433,10 @@ class NumberCell(Cell):
     """
     .. NOTE::
 
-       Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+         Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+
+     A numeric cell exposes its value as a ``float`` and may have a formula,
+     style, border, or number format.
     """
 
     def __init__(self, row: int, col: int, value: float, cell_type=CellType.NUMBER) -> None:
@@ -1408,6 +1449,12 @@ class NumberCell(Cell):
 
 
 class TextCell(Cell):
+    """
+    Cell containing plain text.
+
+    Text cells are created while reading a document or by :meth:`Table.write`.
+    """
+
     def __init__(self, row: int, col: int, value: str) -> None:
         self._type = CellType.TEXT
         super().__init__(row, col, value)
@@ -1450,8 +1497,8 @@ class RichTextCell(Cell):
         return self._bullets
 
     @property
-    def formatted_bullets(self) -> str:
-        """str: The bullets as a formatted multi-line string."""
+    def formatted_bullets(self) -> list[str]:
+        """list[str]: The bullet paragraphs including their bullet markers."""
         return self._formatted_bullets
 
     @property
@@ -1486,6 +1533,8 @@ class EmptyCell(Cell):
     .. NOTE::
 
        Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+
+    Empty cells have a value of ``None`` and an empty formatted value.
     """
 
     def __init__(self, row: int, col: int) -> None:
@@ -1506,6 +1555,8 @@ class BoolCell(Cell):
     .. NOTE::
 
        Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+
+    Boolean cells expose a Python ``bool`` and can use tickbox formatting.
     """
 
     def __init__(self, row: int, col: int, value: bool) -> None:
@@ -1523,6 +1574,8 @@ class DateCell(Cell):
     .. NOTE::
 
        Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+
+    Date cells expose a :class:`datetime.datetime` value.
     """
 
     def __init__(self, row: int, col: int, value: datetime) -> None:
@@ -1535,6 +1588,8 @@ class DateCell(Cell):
 
 
 class DurationCell(Cell):
+    """Cell containing a :class:`datetime.timedelta` value."""
+
     def __init__(self, row: int, col: int, value: timedelta) -> None:
         super().__init__(row, col, value)
         self._type = CellType.DURATION
@@ -1549,6 +1604,9 @@ class ErrorCell(Cell):
     .. NOTE::
 
        Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+
+    Error cells expose ``None`` as their value. Their formatted value preserves
+    the formatted error text when it is available.
     """
 
     def __init__(self, row: int, col: int) -> None:
@@ -1565,6 +1623,10 @@ class MergedCell(Cell):
     .. NOTE::
 
        Do not instantiate directly. Cells are created by :py:class:`~numbers_parser.Document`.
+
+    Merged cells represent non-anchor positions in a merged range. Use
+    :attr:`Cell.merge_range` and the row/column boundary properties to inspect
+    the range.
     """
 
     def __init__(self, row: int, col: int) -> None:
