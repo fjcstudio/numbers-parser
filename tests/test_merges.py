@@ -1,3 +1,7 @@
+import warnings
+
+import pytest
+
 from numbers_parser import Document, MergedCell
 
 XXX_TABLE_1_REF = [
@@ -136,3 +140,27 @@ def test_create_rectangular_merge():
     assert table.cell("C3").merge_range == "B2:C3"
     assert table.cell("B2").size == (2, 2)
     assert table.cell("C2").merge_range == "B2:C3"
+
+
+def test_merge_crossing_header_column_boundary_warns():
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.num_header_rows = 0
+    table.num_header_cols = 1
+    with pytest.warns(RuntimeWarning, match="header-column boundary"):
+        table.merge_cells("A2:B2")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        table.merge_cells("B3:C3")
+
+
+def test_merge_crossing_header_row_boundary_warns():
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.num_header_cols = 0
+    table.num_header_rows = 1
+    with pytest.warns(RuntimeWarning, match="header-row boundary"):
+        table.merge_cells("B1:B2")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        table.merge_cells("B3:B4")

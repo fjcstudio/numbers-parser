@@ -426,6 +426,71 @@ class _NumbersModel(Cacheable):
         drawables.insert(position, TSPMessages.Reference(identifier=copy_id))
         return copy_id
 
+    def _header_footer_storage(self, sheet_id: int, kind: str, zone: int):
+        refs = getattr(self.objects[sheet_id], kind)
+        if not 0 <= zone < len(refs):
+            msg = f"{kind[:-1]} zone {zone} does not exist (sheet has {len(refs)})"
+            raise IndexError(msg)
+        return self.objects[refs[zone].identifier]
+
+    def header_footer_text(self, sheet_id: int, kind: str, zone: int) -> str:
+        """Return the text of a page header or footer zone ("headers" or "footers")."""
+        storage = self._header_footer_storage(sheet_id, kind, zone)
+        return "".join(storage.text)
+
+    def header_footer_char_runs(self, sheet_id: int, kind: str, zone: int) -> list:
+        """Return the character style runs of a zone as (character_index, object_id or None)."""
+        storage = self._header_footer_storage(sheet_id, kind, zone)
+        return [
+            (e.character_index, e.object.identifier if e.HasField("object") else None)
+            for e in storage.table_char_style.entries
+        ]
+
+    def set_header_footer_text(
+        self, sheet_id: int, kind: str, zone: int, text: str, runs: list = None
+    ) -> None:
+        """Replace the text of a page header or footer zone.
+
+        Style runs are kept for the part of the text they still cover and
+        dropped past the end of the new text, so a shorter text leaves no
+        run pointing beyond it. Text after the last kept run takes that run's style.
+        If ``runs`` is given, it replaces the character style runs: a list of
+        (character_index, object_id or None) as returned by
+        :meth:`header_footer_char_runs`.
+        """
+        storage = self._header_footer_storage(sheet_id, kind, zone)
+        length = len(text.encode("utf-16-le")) // 2
+        del storage.text[:]
+        storage.text.append(text)
+        for name in (
+            "table_para_style",
+            "table_para_data",
+            "table_list_style",
+            "table_char_style",
+            "table_para_starts",
+            "table_language",
+            "table_para_bidi",
+        ):
+            entries = getattr(storage, name).entries
+            keep = [e for e in entries if e.character_index == 0 or e.character_index < length]
+            if len(keep) != len(entries):
+                kept = [type(e).FromString(e.SerializeToString()) for e in keep]
+                del entries[:]
+                entries.extend(kept)
+        if runs is not None:
+            entries = storage.table_char_style.entries
+            template = entries[0] if len(entries) else None
+            del entries[:]
+            for index, object_id in runs:
+                entry = type(template)() if template is not None else None
+                if entry is None:
+                    msg = "zone has no character style runs to extend"
+                    raise ValueError(msg)
+                entry.character_index = index
+                if object_id is not None:
+                    entry.object.identifier = object_id
+                entries.append(entry)
+
     def image_ids(self, sheet_id: int) -> list[int]:
         """Return the object IDs of the free-standing images on a sheet, back to front."""
         return [
@@ -479,6 +544,30 @@ class _NumbersModel(Cacheable):
         ]
 
     # Don't cache: new tables can be added at runtime
+    def paper_size(self) -> tuple[str, float, float]:
+        """Return (paper id, portrait width, portrait height) in points."""
+        doc = self.objects[DOCUMENT_ID]
+        return doc.paper_id, doc.page_size.width, doc.page_size.height
+
+    def set_paper_size(self, paper_id: str, width: float, height: float) -> None:
+        doc = self.objects[DOCUMENT_ID]
+        doc.paper_id = paper_id
+        doc.page_size.width = width
+        doc.page_size.height = height
+
+    def sheet_is_portrait(self, sheet_id: int) -> bool:
+        return self.objects[sheet_id].in_portrait_page_orientation
+
+    def set_sheet_portrait(self, sheet_id: int, portrait: bool) -> None:
+        self.objects[sheet_id].in_portrait_page_orientation = portrait
+
+    def table_locked(self, table_id: int) -> bool:
+        """Return True if the table is locked against moving, resizing and editing in Numbers."""
+        return self.objects[self.table_info_id(table_id)].super.locked
+
+    def set_table_locked(self, table_id: int, locked: bool) -> None:
+        self.objects[self.table_info_id(table_id)].super.locked = locked
+
     def table_info_id(self, table_id: int) -> int:
         """Return the TableInfoArchive ID for a given table ID."""
         ids = [
@@ -2394,6 +2483,10 @@ class _NumbersModel(Cacheable):
             },
             TSWPArchives.ParagraphStyleArchive,
         )
+        if style.baseline_shift is not None:
+            para_style.char_properties.baseline_shift = style.baseline_shift
+        if style.line_spacing is not None:
+            self._set_line_spacing(para_style, style.line_spacing)
         stylesheet_id = self.objects[DOCUMENT_ID].stylesheet.identifier
         para_style.super.stylesheet.MergeFrom(TSPMessages.Reference(identifier=stylesheet_id))
         self.objects[stylesheet_id].styles.append(TSPMessages.Reference(identifier=para_style_id))
@@ -2436,6 +2529,18 @@ class _NumbersModel(Cacheable):
         style_obj.para_properties.first_line_indent = style.first_indent
         style_obj.para_properties.left_indent = style.left_indent
         style_obj.para_properties.right_indent = style.right_indent
+        if style.baseline_shift is not None:
+            style_obj.char_properties.baseline_shift = style.baseline_shift
+        if style.line_spacing is not None:
+            self._set_line_spacing(style_obj, style.line_spacing)
+
+    @staticmethod
+    def _set_line_spacing(style_obj: object, amount: float) -> None:
+        style_obj.para_properties.line_spacing_null = False
+        style_obj.para_properties.line_spacing.mode = (
+            TSWPArchives.LineSpacingArchive.kRelativeLineSpacing
+        )
+        style_obj.para_properties.line_spacing.amount = amount
 
     def update_paragraph_styles(self, data: list = None) -> None:
         """
@@ -2901,6 +3006,32 @@ class _NumbersModel(Cacheable):
     def cell_first_indent(self, obj: Cell | object) -> float:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
         return self.para_property(style, "first_line_indent")
+
+    def cell_baseline_shift(self, obj: Cell | object) -> float:
+        style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
+        return self.char_property(style, "baseline_shift")
+
+    def cell_line_spacing(self, obj: Cell | object) -> float | None:
+        """
+        Return the relative line spacing amount, or None if the style has none.
+
+        Only relative spacing (a multiple of the line height) is reported. A style
+        using exact, minimum, maximum or space-between spacing returns None, since
+        its amount is in points and would not fit a single relative value.
+        """
+        style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
+        while style is not None:
+            props = style.para_properties
+            if props.line_spacing_null:
+                return None
+            if props.HasField("line_spacing"):
+                if props.line_spacing.mode != TSWPArchives.LineSpacingArchive.kRelativeLineSpacing:
+                    return None
+                return props.line_spacing.amount
+            if not style.super.HasField("parent"):
+                return None
+            style = self.objects[style.super.parent.identifier]
+        return None
 
     def cell_left_indent(self, obj: Cell | object) -> float:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj

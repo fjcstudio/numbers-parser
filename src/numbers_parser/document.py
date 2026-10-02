@@ -28,6 +28,7 @@ from numbers_parser.constants import (
     MAX_COL_COUNT,
     MAX_HEADER_COUNT,
     MAX_ROW_COUNT,
+    PAPER_SIZES,
 )
 from numbers_parser.containers import ItemsList
 from numbers_parser.model import _NumbersModel
@@ -103,6 +104,47 @@ class Document:
             table.num_header_rows = num_header_rows
             table.add_column(num_cols - 1)
             table.num_header_cols = num_header_cols
+
+    @property
+    def paper_size(self) -> str:
+        """
+        str: Name of the document's paper size, ``"a4"`` or ``"a3"``, or the paper id
+        stored in the file for any other size. Can be set to ``"a4"`` or ``"a3"``;
+        use :meth:`set_paper_size` for other sizes.
+        """
+        paper_id, _, _ = self._model.paper_size()
+        for name, (known_id, _, _) in PAPER_SIZES.items():
+            if paper_id == known_id:
+                return name
+        return paper_id
+
+    @paper_size.setter
+    def paper_size(self, name: str) -> None:
+        if name not in PAPER_SIZES:
+            msg = f"unknown paper size '{name}'; use one of {sorted(PAPER_SIZES)} or set_paper_size()"
+            raise ValueError(msg)
+        self._model.set_paper_size(*PAPER_SIZES[name])
+
+    @property
+    def page_dimensions(self) -> tuple[float, float]:
+        """tuple[float, float]: Paper (width, height) in points, portrait. Read-only."""
+        _, width, height = self._model.paper_size()
+        return width, height
+
+    def set_paper_size(self, paper_id: str, width: float, height: float) -> None:
+        """
+        Set a paper size that :attr:`paper_size` does not name.
+
+        Parameters
+        ----------
+        paper_id: str
+            Paper identifier as Numbers stores it, for example ``"iso-a4"``
+        width: float
+            Portrait paper width in points
+        height: float
+            Portrait paper height in points
+        """
+        self._model.set_paper_size(paper_id, float(width), float(height))
 
     @property
     def sheets(self) -> list[Sheet]:
@@ -457,6 +499,48 @@ class Sheet:
         self._model.clear_ruler_guides(self._sheet_id)
 
     @property
+    def orientation(self) -> str:
+        """str: ``"portrait"`` or ``"landscape"``, the sheet's print orientation. Can be set."""
+        return "portrait" if self._model.sheet_is_portrait(self._sheet_id) else "landscape"
+
+    @orientation.setter
+    def orientation(self, value: str) -> None:
+        if value not in ("portrait", "landscape"):
+            msg = f"orientation must be 'portrait' or 'landscape', not '{value}'"
+            raise ValueError(msg)
+        self._model.set_sheet_portrait(self._sheet_id, value == "portrait")
+
+    def header_text(self, zone: int = 0) -> str:
+        """str: Text of a page header zone (0, 1, 2 from left to right)."""
+        return self._model.header_footer_text(self._sheet_id, "headers", zone)
+
+    def header_char_runs(self, zone: int = 0) -> list:
+        """List[tuple]: Character style runs of a header zone, as (index, style id or None)."""
+        return self._model.header_footer_char_runs(self._sheet_id, "headers", zone)
+
+    def set_header_text(self, text: str, zone: int = 0, runs: list = None) -> None:
+        """Set the text of a page header zone, keeping its existing style.
+
+        ``runs`` optionally replaces the character style runs (see :meth:`header_char_runs`).
+        """
+        self._model.set_header_footer_text(self._sheet_id, "headers", zone, text, runs)
+
+    def footer_text(self, zone: int = 0) -> str:
+        """str: Text of a page footer zone (0, 1, 2 from left to right)."""
+        return self._model.header_footer_text(self._sheet_id, "footers", zone)
+
+    def footer_char_runs(self, zone: int = 0) -> list:
+        """List[tuple]: Character style runs of a footer zone, as (index, style id or None)."""
+        return self._model.header_footer_char_runs(self._sheet_id, "footers", zone)
+
+    def set_footer_text(self, text: str, zone: int = 0, runs: list = None) -> None:
+        """Set the text of a page footer zone, keeping its existing style.
+
+        ``runs`` optionally replaces the character style runs (see :meth:`footer_char_runs`).
+        """
+        self._model.set_header_footer_text(self._sheet_id, "footers", zone, text, runs)
+
+    @property
     def images(self) -> list:
         """List[:class:`Image`]: The free-standing images on the sheet, back to front."""
         return [Image(self._model, i) for i in self._model.image_ids(self._sheet_id)]
@@ -665,6 +749,15 @@ class Table(Cacheable):
         cases cannot be told apart from this value.
         """
         return self._model.table_name_height(self._table_id)
+
+    @property
+    def locked(self) -> bool:
+        """bool: ``True`` if the table is locked in Numbers.app. Can be set."""
+        return self._model.table_locked(self._table_id)
+
+    @locked.setter
+    def locked(self, value: bool) -> None:
+        self._model.set_table_locked(self._table_id, bool(value))
 
     @property
     def caption_enabled(self) -> int:
@@ -1550,6 +1643,28 @@ class Table(Cacheable):
             (row_end, col_end) = xl_cell_to_rowcol(end_cell_ref)
             num_rows = row_end - row_start + 1
             num_cols = col_end - col_start + 1
+
+            num_header_cols = self._model.num_header_cols(self._table_id)
+            num_header_rows = self._model.num_header_rows(self._table_id)
+            if num_header_cols > 0 and col_start < num_header_cols <= col_end:
+                warn(
+                    f"merge range {cell_range} crosses the header-column boundary "
+                    f"(column {num_header_cols - 1} is the last header column); "
+                    "Numbers.app silently disregards this merge even though it "
+                    "completes without error",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            if num_header_rows > 0 and row_start < num_header_rows <= row_end:
+                warn(
+                    f"merge range {cell_range} crosses the header-row boundary "
+                    f"(row {num_header_rows - 1} is the last header row); "
+                    "Numbers.app may silently disregard this merge even though it "
+                    "completes without error (inferred from the confirmed "
+                    "header-column behaviour, not independently checked)",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
             merge_cells = self._model.merge_cells(self._table_id)
             merge_cells.add_anchor(row_start, col_start, (num_rows, num_cols))

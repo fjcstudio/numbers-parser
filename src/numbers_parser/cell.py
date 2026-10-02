@@ -267,6 +267,12 @@ class Style:
         Text inset in points
     text_wrap: bool, optional, default: True
         ``True`` if text wrapping is enabled
+    baseline_shift: float, optional, default: None
+        Baseline shift in points (positive raises the text). ``None`` leaves the
+        value unset when a style is created, so it inherits from its parent.
+    line_spacing: float, optional, default: None
+        Relative line spacing as a multiple of the line height (1.0 is single
+        spacing). ``None`` leaves the value unset when a style is created.
 
     Raises
     ------
@@ -292,6 +298,8 @@ class Style:
     right_indent: float = 0
     text_inset: float = DEFAULT_TEXT_INSET
     text_wrap: bool = DEFAULT_TEXT_WRAP
+    baseline_shift: float = None
+    line_spacing: float = None
     name: str = None
     _font_details: dict = None
     _text_style_obj_id: int = None
@@ -303,6 +311,7 @@ class Style:
     def _text_attrs():
         return [
             "alignment",
+            "baseline_shift",
             "bold",
             "first_indent",
             "font_color",
@@ -310,6 +319,7 @@ class Style:
             "font_size",
             "italic",
             "left_indent",
+            "line_spacing",
             "name",
             "right_indent",
             "strikethrough",
@@ -350,6 +360,8 @@ class Style:
             right_indent=model.cell_right_indent(cell),
             text_inset=model.cell_text_inset(cell),
             text_wrap=model.cell_text_wrap(cell),
+            baseline_shift=model.cell_baseline_shift(cell),
+            line_spacing=model.cell_line_spacing(cell),
             _font_details=model.cell_font_details(cell),
             _text_style_obj_id=model.text_style_object_id(cell),
             _cell_style_obj_id=model.cell_style_object_id(cell),

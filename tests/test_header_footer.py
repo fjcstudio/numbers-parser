@@ -1,0 +1,60 @@
+import pytest
+
+from numbers_parser import Document
+
+
+def test_header_and_footer_text_round_trip(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    assert sheet.header_text() == ""
+    sheet.set_header_text("Nominated architects: A and B")
+    sheet.set_header_text("Centre", zone=1)
+    sheet.set_footer_text("Level 6, Australia Square", zone=0)
+    doc.save(configurable_save_file)
+
+    sheet = Document(configurable_save_file).sheets[0]
+    assert sheet.header_text() == "Nominated architects: A and B"
+    assert sheet.header_text(1) == "Centre"
+    assert sheet.footer_text() == "Level 6, Australia Square"
+
+
+def test_shorter_text_drops_style_runs_past_the_end(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    sheet.set_header_text("x" * 100)
+    storage = doc._model._header_footer_storage(sheet._sheet_id, "headers", 0)
+    run = storage.table_char_style.entries.add()
+    run.character_index = 60
+    sheet.set_header_text("short")
+    assert all(e.character_index < 5 for e in storage.table_char_style.entries)
+    doc.save(configurable_save_file)
+    assert Document(configurable_save_file).sheets[0].header_text() == "short"
+
+
+def test_clearing_text(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    sheet.set_footer_text("something")
+    sheet.set_footer_text("")
+    doc.save(configurable_save_file)
+    assert Document(configurable_save_file).sheets[0].footer_text() == ""
+
+
+def test_missing_zone_raises():
+    sheet = Document().sheets[0]
+    with pytest.raises(IndexError, match="zone 9 does not exist"):
+        sheet.set_header_text("x", zone=9)
+    with pytest.raises(IndexError, match="zone 9 does not exist"):
+        sheet.footer_text(9)
+
+
+def test_char_style_runs_can_be_replaced(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    sheet.set_footer_text("abc def")
+    storage = doc._model._header_footer_storage(sheet._sheet_id, "footers", 0)
+    storage.table_char_style.entries.add().character_index = 0
+    sheet.set_footer_text("abc def ghi", runs=[(0, None), (4, None), (8, None)])
+    assert [i for i, _ in sheet.footer_char_runs()] == [0, 4, 8]
+    doc.save(configurable_save_file)
+    assert [i for i, _ in Document(configurable_save_file).sheets[0].footer_char_runs()] == [0, 4, 8]

@@ -228,3 +228,15 @@ def test_stub_captions(configurable_save_file):
     assert table1.caption == "Caption"
     assert not table1.caption_enabled
     doc.save(configurable_save_file)
+
+
+def test_table_locked_round_trip(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    assert table.locked is False
+    table.locked = True
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.locked is True
+    table.locked = False
+    assert table.locked is False

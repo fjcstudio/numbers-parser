@@ -27,6 +27,13 @@ DEFAULT_DOCUMENT = files("numbers_parser") / "data" / "empty.numbers"
 
 # New document defaults
 DEFAULT_COLUMN_COUNT = 8
+
+# Paper sizes Document.paper_size accepts: name -> (paper id stored in the file, width, height)
+# in points, portrait. Landscape is recorded on each sheet, not in these dimensions.
+PAPER_SIZES = {
+    "a3": ("iso-a3", 842.0, 1191.0),
+    "a4": ("iso-a4", 595.0, 842.0),
+}
 DEFAULT_COLUMN_WIDTH = 98.0
 DEFAULT_PRE_BNC_BYTES = "🤠".encode()  # Yes, really!
 DEFAULT_ROW_COUNT = 12
