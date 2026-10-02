@@ -26,3 +26,9 @@ and can be indexed using either list style or dict style indexes:
 
 .. autoclass:: Sheet()
    :members:
+
+Image Class
+###########
+
+.. autoclass:: numbers_parser.document.Image()
+   :members:

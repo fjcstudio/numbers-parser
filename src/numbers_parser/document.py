@@ -355,6 +355,60 @@ class Document:
         return custom_format
 
 
+class Image:
+    """A free-standing image on a sheet. Do not instantiate directly."""
+
+    def __init__(self, model, image_id) -> None:
+        self._model = model
+        self._image_id = image_id
+
+    @property
+    def x(self) -> float:
+        """float: Left edge in points. Can be set."""
+        return self._model.image_geometry(self._image_id).position.x
+
+    @x.setter
+    def x(self, value: float) -> None:
+        self._model.image_geometry(self._image_id).position.x = value
+
+    @property
+    def y(self) -> float:
+        """float: Top edge in points. Can be set."""
+        return self._model.image_geometry(self._image_id).position.y
+
+    @y.setter
+    def y(self, value: float) -> None:
+        self._model.image_geometry(self._image_id).position.y = value
+
+    @property
+    def width(self) -> float:
+        """float: Width in points. Can be set."""
+        return self._model.image_geometry(self._image_id).size.width
+
+    @width.setter
+    def width(self, value: float) -> None:
+        self._model.image_geometry(self._image_id).size.width = value
+
+    @property
+    def height(self) -> float:
+        """float: Height in points. Can be set."""
+        return self._model.image_geometry(self._image_id).size.height
+
+    @height.setter
+    def height(self, value: float) -> None:
+        self._model.image_geometry(self._image_id).size.height = value
+
+    @property
+    def data(self) -> bytes:
+        """bytes: The image file contents, or None if the file is missing."""
+        return self._model.image_data(self._image_id)[0]
+
+    @property
+    def filename(self) -> str:
+        """str: The image's file name, or None if the file is missing."""
+        return self._model.image_data(self._image_id)[1]
+
+
 class Sheet:
     def __init__(self, model, sheet_id) -> None:
         self._sheet_id = sheet_id
@@ -397,6 +451,45 @@ class Sheet:
             Distance from the sheet's own top/left edge, in points.
         """
         self._model.add_ruler_guide(self._sheet_id, axis, position)
+
+    def clear_ruler_guides(self) -> None:
+        """Remove every ruler guide from this sheet."""
+        self._model.clear_ruler_guides(self._sheet_id)
+
+    @property
+    def images(self) -> list:
+        """List[:class:`Image`]: The free-standing images on the sheet, back to front."""
+        return [Image(self._model, i) for i in self._model.image_ids(self._sheet_id)]
+
+    def add_image(
+        self,
+        data: bytes,
+        filename: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        width: float = 200.0,
+        height: float = 200.0,
+    ) -> "Image":
+        """
+        Add a free-standing image to the sheet and return it.
+
+        Parameters
+        ----------
+        data: bytes
+            The image file contents (PNG, JPEG, PDF and so on).
+        filename: str
+            The name to store the file under in the document package.
+        x, y: float, optional
+            Position of the top-left corner from the sheet's top-left, in points.
+        width, height: float, optional
+            Size in points.
+        """
+        image_id = self._model.add_image(self._sheet_id, data, filename, x, y, width, height)
+        return Image(self._model, image_id)
+
+    def remove_image(self, image: "Image") -> None:
+        """Remove an image from the sheet. Its file stays in the package."""
+        self._model.remove_image(self._sheet_id, image._image_id)
 
     def add_table(
         self,

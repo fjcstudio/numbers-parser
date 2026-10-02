@@ -52,3 +52,16 @@ def test_add_ruler_guide_rejects_invalid_axis():
     doc = Document()
     with pytest.raises(ValueError, match="axis must be"):
         doc.sheets[0].add_ruler_guide("diagonal", 100.0)
+
+
+def test_clear_ruler_guides(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    sheet.clear_ruler_guides()
+    sheet.add_ruler_guide("horizontal", 10.0)
+    sheet.add_ruler_guide("vertical", 20.0)
+    sheet.clear_ruler_guides()
+    assert sheet.ruler_guides == []
+    sheet.add_ruler_guide("horizontal", 99.0)
+    doc.save(configurable_save_file)
+    assert Document(configurable_save_file).sheets[0].ruler_guides == [("horizontal", 99.0)]

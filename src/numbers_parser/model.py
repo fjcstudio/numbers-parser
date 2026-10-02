@@ -356,6 +356,89 @@ class _NumbersModel(Cacheable):
         guide.type = guide_type
         guide.position = position
 
+    def add_image(
+        self,
+        sheet_id: int,
+        data: bytes,
+        filename: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> int:
+        """
+        Add a free-standing image to a sheet at (x, y), sized (width, height),
+        all in points. Returns the new image's object ID.
+
+        The file is registered in the package the same way a cell background
+        image is (SHA1 deduplication, Data/ file, DataInfo entry). The drawable
+        reuses the geometry built for a new table.
+        """
+        digest = sha1(data).digest()  # noqa: S324
+        if digest in self._images:
+            image_id = self._images[digest]
+        else:
+            image_id = self.next_image_identifier()
+            self.objects[PACKAGE_ID].datas.append(
+                TSPArchiveMessages.DataInfo(
+                    identifier=image_id,
+                    digest=digest,
+                    preferred_file_name=filename,
+                    file_name=filename,
+                    materialized_length=len(data),
+                ),
+            )
+            self._images[digest] = image_id
+            self.store_image(data, filename)
+
+        image_info_id, image_info = self.objects.create_object_from_dict(
+            "Document",
+            {"data": {"identifier": image_id}},
+            TSDArchives.ImageArchive,
+        )
+        image_info.super.MergeFrom(self.create_drawable(sheet_id, x, y, height=height, width=width))
+
+        self.objects[sheet_id].drawable_infos.append(
+            TSPMessages.Reference(identifier=image_info_id),
+        )
+        return image_info_id
+
+    def image_ids(self, sheet_id: int) -> list[int]:
+        """Return the object IDs of the free-standing images on a sheet, back to front."""
+        return [
+            ref.identifier
+            for ref in self.objects[sheet_id].drawable_infos
+            if isinstance(self.objects[ref.identifier], TSDArchives.ImageArchive)
+        ]
+
+    def image_geometry(self, image_id: int):
+        """Return the GeometryArchive of an image."""
+        return self.objects[image_id].super.geometry
+
+    def image_data(self, image_id: int) -> tuple[bytes, str]:
+        """Return (data, filename) for an image, or (None, None) if its file is missing."""
+        data_id = self.objects[image_id].data.identifier
+        datas = self.objects[PACKAGE_ID].datas
+        info = next((x for x in datas if x.identifier == data_id), None)
+        if info is None:
+            return None, None
+        data = self.objects.file_store.get(f"Data/{info.file_name}")
+        return data, info.preferred_file_name or info.file_name
+
+    def remove_image(self, sheet_id: int, image_id: int) -> None:
+        """Remove an image from a sheet.
+
+        The package file and its DataInfo stay, since another image can share
+        them through SHA1 deduplication.
+        """
+        drawables = self.objects[sheet_id].drawable_infos
+        for i, ref in enumerate(drawables):
+            if ref.identifier == image_id:
+                del drawables[i]
+                return
+        msg = f"no image with id {image_id} on this sheet"
+        raise IndexError(msg)
+
     def set_table_data(self, table_id: int, data: list) -> None:
         self._table_data[table_id] = data
 
@@ -410,6 +493,13 @@ class _NumbersModel(Cacheable):
             self.objects[table_id].table_name_enabled = enabled
             return None
         return self.objects[table_id].table_name_enabled
+
+    def clear_ruler_guides(self, sheet_id: int) -> None:
+        """Remove every ruler guide from the sheet."""
+        sheet_obj = self.objects[sheet_id]
+        if sheet_obj.HasField("userDefinedGuideStorage"):
+            storage_obj = self.objects[sheet_obj.userDefinedGuideStorage.identifier]
+            del storage_obj.userDefinedGuides[:]
 
     def table_name_height(self, table_id: int) -> float:
         """Return the table's name banner height in points (0.0 if never rendered)."""
