@@ -37,3 +37,26 @@ Numbers conflates style attributes that can be stored in paragraph styles (the s
    )
    table.write("B2", "Red", style=red_text)
    table.set_cell_style("C2", red_text)
+
+**Custom fonts**
+
+Fonts that are not shipped with Numbers are rejected by ``Style`` so that typos are reported.
+To use a font that is installed on the machine that will open the document, register it first
+with :py:func:`numbers_parser.register_font`. ``name`` is the PostScript name stored in the
+document and ``family`` is the name passed as ``Style.font_name``:
+
+.. code:: python
+
+   from numbers_parser import Document, Style, register_font
+
+   register_font("Roboto-Regular", family="Roboto")
+   register_font("Roboto-Light", family="Roboto", style="Light")
+
+   doc = Document()
+   table = doc.sheets[0].tables[0]
+   table.write("A1", "Hello")
+   table.set_cell_style("A1", Style(font_name="Roboto"))
+   table.write("A2", "Hello")
+   table.set_cell_style("A2", Style(font_name=("Roboto", "Light")))
+   doc.save("fonts.numbers")
+

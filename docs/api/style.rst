@@ -12,3 +12,5 @@ Style Class
 
 .. autoclass:: BackgroundImage()
    :members:
+
+.. autofunction:: register_font

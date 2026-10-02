@@ -114,3 +114,14 @@ whitespace. Supported directives are:
 | ``SSSSS`` | Seconds to five decimal   | 00000 - 9999           |
 |           | places                    |                        |
 +-----------+---------------------------+------------------------+
+
+Time zones
+----------
+
+Numbers stores dates as seconds since 1 January 2001 UTC and has no time zone of its own.
+Naive ``datetime`` values are written as given. A timezone-aware ``datetime`` is converted
+relative to UTC, so a date written as ``datetime(2020, 12, 25, tzinfo=timezone.utc)`` is
+read back as ``datetime(2020, 12, 25)`` whatever the local time zone. Upstream
+``numbers-parser`` 4.20 instead shifts such values by the local UTC offset, so results can
+differ between the two when a document is written with aware datetimes outside UTC.
+
