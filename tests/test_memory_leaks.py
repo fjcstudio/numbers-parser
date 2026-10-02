@@ -1,11 +1,26 @@
 import gc
+import logging
 from sys import version_info
 
+import pytest
 from pympler import muppy, summary
 
 from numbers_parser import Document
 
 
+@pytest.fixture(name="quiet_logger")
+def quiet_logger_fixture():
+    # Tests that run the CLIs in-process with --debug leave the numbers_parser
+    # logger at DEBUG. pytest then keeps every debug record emitted while this
+    # test loads documents, which looks like a leak, so pin the level here.
+    logger = logging.getLogger("numbers_parser")
+    level = logger.level
+    logger.setLevel(logging.WARNING)
+    yield
+    logger.setLevel(level)
+
+
+@pytest.mark.usefixtures("quiet_logger")
 def test_memory_leaks():
     """Memory leak test (see issue-67)."""
     if version_info < (3, 11):
