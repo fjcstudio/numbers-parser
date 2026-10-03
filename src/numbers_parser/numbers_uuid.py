@@ -100,10 +100,8 @@ def derive_table_identity_uuid(table_id_uuid: NumbersUUID) -> NumbersUUID:
     that does not hold this value, Numbers.app silently retires ("adopts")
     it and rebuilds the table's identity -- and every reference into the
     table that named it under the old identity -- from scratch, under the
-    value derived here. See
-    ``Claude chat handoff notes/session_2026-08-28_artifacts/fresh_eyes_findings_2026-08-28.md``,
-    "Result (round 4): the actual mechanism, one line", for the experiment
-    that pinned this down.
+    value derived here. Commit 7158166 records the experiment that pinned
+    this down, and ``tests/test_table_identity_adoption.py`` covers it.
 
     ``table_id_uuid`` must be the exact same ``NumbersUUID`` written into
     this table's own ``table_id`` string (``str(table_id_uuid).upper()``) --

@@ -75,8 +75,11 @@ def test_left_operand_needing_parens():
     # (A1+B1)*2 != A1+B1*2 (16 vs 11 for A1=5, B1=3).
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_ADD),
-        _num_node(2), _op_node(_MUL),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_ADD),
+        _num_node(2),
+        _op_node(_MUL),
     ]
     _write_raw_formula(table, 1, 0, seq, 16.0)
     assert table.cell(1, 0).formula == "(A1+B1)×2.0"
@@ -87,7 +90,10 @@ def test_right_operand_at_lower_precedence_is_safe_unparenthesised():
     # binds tighter than + regardless of parentheses.
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _num_node(2), _op_node(_MUL),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _num_node(2),
+        _op_node(_MUL),
         _op_node(_ADD),
     ]
     _write_raw_formula(table, 1, 0, seq, 11.0)
@@ -99,7 +105,9 @@ def test_subtraction_is_not_associative_on_the_right():
     _doc, table = _table_with_values()
     seq = [
         _ref_node(1, 0, 0, 0),
-        _ref_node(1, 0, 0, 1), _ref_node(1, 0, 0, 2), _op_node(_SUB),
+        _ref_node(1, 0, 0, 1),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_SUB),
         _op_node(_SUB),
     ]
     _write_raw_formula(table, 1, 0, seq, 4.0)
@@ -110,8 +118,11 @@ def test_subtraction_flattens_safely_on_the_left():
     # (A1-B1)-C1 == A1-B1-C1: safe to render without parens.
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_SUB),
-        _ref_node(1, 0, 0, 2), _op_node(_SUB),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_SUB),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_SUB),
     ]
     _write_raw_formula(table, 1, 0, seq, 0.0)
     assert table.cell(1, 0).formula == "A1-B1-C1"
@@ -122,7 +133,9 @@ def test_division_is_not_associative_on_the_right():
     _doc, table = _table_with_values()
     seq = [
         _ref_node(1, 0, 0, 0),
-        _ref_node(1, 0, 0, 1), _ref_node(1, 0, 0, 2), _op_node(_DIV),
+        _ref_node(1, 0, 0, 1),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_DIV),
         _op_node(_DIV),
     ]
     _write_raw_formula(table, 1, 0, seq, 5.0 / (3.0 / 2.0))
@@ -132,8 +145,11 @@ def test_division_is_not_associative_on_the_right():
 def test_division_flattens_safely_on_the_left():
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_DIV),
-        _ref_node(1, 0, 0, 2), _op_node(_DIV),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_DIV),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_DIV),
     ]
     _write_raw_formula(table, 1, 0, seq, (5.0 / 3.0) / 2.0)
     assert table.cell(1, 0).formula == "A1÷B1÷C1"
@@ -142,8 +158,11 @@ def test_division_flattens_safely_on_the_left():
 def test_addition_flattens_safely_on_the_left():
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_SUB),
-        _ref_node(1, 0, 0, 2), _op_node(_ADD),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_SUB),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_ADD),
     ]
     _write_raw_formula(table, 1, 0, seq, 6.0)
     assert table.cell(1, 0).formula == "A1-B1+C1"
@@ -157,7 +176,9 @@ def test_addition_flattens_safely_on_the_right():
     _doc, table = _table_with_values()
     seq = [
         _ref_node(1, 0, 0, 0),
-        _ref_node(1, 0, 0, 1), _ref_node(1, 0, 0, 2), _op_node(_SUB),
+        _ref_node(1, 0, 0, 1),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_SUB),
         _op_node(_ADD),
     ]
     _write_raw_formula(table, 1, 0, seq, 6.0)
@@ -168,7 +189,9 @@ def test_negate_needs_parens_around_additive_operand():
     # -(A1+B1) != -A1+B1 (-8 vs 2 for A1=5, B1=3).
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_ADD),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_ADD),
         _op_node(_NEG),
     ]
     _write_raw_formula(table, 1, 0, seq, -8.0)
@@ -179,7 +202,9 @@ def test_negate_does_not_need_parens_around_multiplicative_operand():
     # -A1*B1 is unambiguous (means -(A1*B1) either way): -15 = -15.
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_MUL),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_MUL),
         _op_node(_NEG),
     ]
     _write_raw_formula(table, 1, 0, seq, -15.0)
@@ -190,7 +215,8 @@ def test_negate_as_right_operand_of_multiplication():
     _doc, table = _table_with_values()
     seq = [
         _ref_node(1, 0, 0, 0),
-        _ref_node(1, 0, 0, 1), _op_node(_NEG),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_NEG),
         _op_node(_MUL),
     ]
     _write_raw_formula(table, 1, 0, seq, -15.0)
@@ -204,7 +230,9 @@ def test_negate_needs_parens_around_power_operand():
     # For A1=5, B1=2: -(A1^B1) = -25, (-A1)^B1 = 25.
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_POWER),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_POWER),
         _op_node(_NEG),
     ]
     _write_raw_formula(table, 1, 0, seq, -25.0)
@@ -215,7 +243,9 @@ def test_percent_needs_parens_around_additive_operand():
     # (A1+B1)% != A1+B1%: 0.08 vs 5.03 for A1=5, B1=3.
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_ADD),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_ADD),
         _op_node(_PERCENT),
     ]
     _write_raw_formula(table, 1, 0, seq, 0.08)
@@ -226,7 +256,9 @@ def test_percent_does_not_need_parens_around_multiplicative_operand():
     # (A1*B1)% == A1*(B1%): both 0.15 for A1=5, B1=3.
     _doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_MUL),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_MUL),
         _op_node(_PERCENT),
     ]
     _write_raw_formula(table, 1, 0, seq, 0.15)
@@ -236,8 +268,12 @@ def test_percent_does_not_need_parens_around_multiplicative_operand():
 def test_deeply_nested_expression_round_trips_through_save_reload(configurable_save_file):
     doc, table = _table_with_values()
     seq = [
-        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_SUB),
-        _ref_node(1, 0, 0, 2), _num_node(1), _op_node(_ADD),
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_SUB),
+        _ref_node(1, 0, 0, 2),
+        _num_node(1),
+        _op_node(_ADD),
         _op_node(_MUL),
     ]
     _write_raw_formula(table, 1, 0, seq, (5.0 - 3.0) * (2.0 + 1.0))
@@ -248,3 +284,58 @@ def test_deeply_nested_expression_round_trips_through_save_reload(configurable_s
     table2 = doc2.sheets[0].tables[0]
     assert table2.cell(1, 0).formula == "(A1-B1)×(C1+1.0)"
     assert table2.cell(1, 0).value == 6.0
+
+
+def test_percent_needs_parens_around_division():
+    # (A1/B1)% != A1/(B1%): 0.0166 vs 166.7 for A1=5, B1=3.
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_DIV),
+        _op_node(_PERCENT),
+    ]
+    _write_raw_formula(table, 1, 0, seq, 0.0166)
+    assert table.cell(1, 0).formula == "(A1÷B1)%"
+
+
+def test_percent_of_division_as_percent_operand_stays_unbracketed():
+    # A1/(B1%) renders with the percent bracketed, as before.
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_PERCENT),
+        _op_node(_DIV),
+    ]
+    _write_raw_formula(table, 1, 0, seq, 166.7)
+    assert table.cell(1, 0).formula == "A1÷(B1%)"
+
+
+def test_percent_needs_parens_when_division_ends_a_product():
+    # A1*(B1/C1) renders as A1×B1÷C1; a following % would attach to C1.
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _ref_node(1, 0, 0, 2),
+        _op_node(_DIV),
+        _op_node(_MUL),
+        _op_node(_PERCENT),
+    ]
+    _write_raw_formula(table, 1, 0, seq, 0.075)
+    assert table.cell(1, 0).formula == "(A1×B1÷C1)%"
+
+
+def test_percent_needs_parens_around_negated_division():
+    # (-(A1/B1))% != -A1/(B1%).
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0),
+        _ref_node(1, 0, 0, 1),
+        _op_node(_DIV),
+        _op_node(_NEG),
+        _op_node(_PERCENT),
+    ]
+    _write_raw_formula(table, 1, 0, seq, -0.0166)
+    assert table.cell(1, 0).formula == "(-A1÷B1)%"

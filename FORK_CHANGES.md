@@ -33,7 +33,7 @@ Everything else (the remaining bug fixes, `register_font`, header and footer tex
 
 ### Borders
 
-**Border moves with its row or column** (`a01ff9d`). `add_row()`, `add_column()`, `delete_row()` and `delete_column()` shifted cell data but not the border stroke sidecar, so a row's border stayed at its old index after an insert or delete. They now shift `row_column_index` and the cross-axis stroke run origin and length with the data. Tests: `tests/test_borders.py`.
+**Border moves with its row or column** (`a01ff9d`, `12fda19`). `add_row()`, `add_column()`, `delete_row()` and `delete_column()` shifted cell data but not the border stroke sidecar, so a row's border stayed at its old index after an insert or delete. `a01ff9d` shifted the sidecar's layers with the data. `12fda19` replaces that: every insert and delete now loads the borders onto the cells, which move with the data, and marks the table so save rebuilds the sidecar from them at the table's new size. A line between two rows is kept on the lower row's top: inserting at it leaves one line above the moved row (it was drawn twice), deleting from the middle joins the neighbours with the line below the deleted block, and deleting through the last row or from the first keeps the table's outer edge (deleting the last row used to drop the bottom border). Columns follow the same rules. Tests: `tests/test_borders.py`.
 
 **Border span grows into rows inserted before the first save** (`897350e`). The stroke sidecar is only populated at save time, so a row or column inserted in the same session, before any save, was not covered by the neighbouring border. `add_row()` and `add_column()` now read each cell's border from the sidecar first, compare the cells either side of the insertion, and extend a matching border across the gap. Tests: `tests/test_borders.py`.
 
@@ -41,9 +41,9 @@ Everything else (the remaining bug fixes, `register_font`, header and footer tex
 
 ### Styles
 
-**Never-styled cells use the table's own defaults** (`a01ff9d`). `cell_text_inset()`, `cell_text_wrap()`, `cell_alignment()` and `cell_bg_color()` returned library constants for a cell with no explicit style. They now fall back to the table's body cell style.
+**Never-styled cells use the table's own defaults** (`a01ff9d`, `5a8d3b5`). `cell_text_inset()`, `cell_text_wrap()`, `cell_alignment()` and `cell_bg_color()` returned library constants for a cell with no explicit style. `a01ff9d` made them fall back to the body cell style for every cell. `5a8d3b5` picks the header row, header column, footer row or body cell style by the cell's position, as `cell_text_style()` does for text, so a never-styled header cell reports the header fill, and editing such a cell keeps it on save. The region is worked out from the table's current header and footer counts when the cell is read. Tests: `tests/test_styles.py`, including the three `test_unstyled_cell_inherits_table_default_*` tests, which now use a body cell and exact values.
 
-**Style changes persist after reopening** (`a01ff9d`). `Style.from_storage()` now resets its dirty flags on construction, and `update_paragraph_styles()` scans cell data as well as the named style registry. Changing an existing cell's text style after reopening a document now persists on save. Tests: `tests/test_styles.py`. The same commit also stopped an unrecognised custom font name raising `KeyError` on save (`_paragraph_style_font_name()`), but that code was dropped when upstream 4.20.0 was merged (`1aecbeb`). Upstream 4.20.0 rejects unknown font names in `Style` instead; see `register_font()` below and [Known issues](#known-issues).
+**Style changes persist after reopening** (`a01ff9d`, `6dc407d`). `Style.from_storage()` now resets its dirty flags on construction, and `update_paragraph_styles()` scans cell data as well as the named style registry. Changing an existing cell's text style after reopening a document now persists on save. `6dc407d` makes the edit apply to that cell only: when the cell's paragraph style is a named style or is used by other cells, the edit goes into a new unnamed variation of it, stored as Numbers stores a cell override (`is_variation` set, the named style as parent, listed in the stylesheet's `styles` and `parent_to_children_style_map`), and a never-styled cell gets a variation of its position's default text style. A style used by that cell alone is edited in place. Such a cell still reports the named style's name. The same commit keeps the font face read from the file (editing a Roboto Light cell no longer saves it as Roboto Regular, and a font this library does not know keeps its stored name), and setting `font_name` on an existing style now changes the saved font. Tests: `tests/test_styles.py`. `a01ff9d` also stopped an unrecognised custom font name raising `KeyError` on save (`_paragraph_style_font_name()`), but that code was dropped when upstream 4.20.0 was merged (`1aecbeb`). Upstream 4.20.0 rejects unknown font names in `Style` instead; see `register_font()` below.
 
 **`KeyError: 0` on documents with unset style parents** (`54bcfdd`). A theme's root paragraph style presets have no `super.parent`. `char_property()`, `para_property()` and `cell_property()` dereferenced the unset reference, looked up object 0, and raised. They now walk to the parent only when `HasField("parent")` is true and otherwise return the field's proto default. This also stops a misleading "Custom font '' unsupported" warning. Tests: `tests/test_styles.py`, `tests/test_formatting.py`.
 
@@ -79,7 +79,7 @@ Tests: `tests/test_table_identity_adoption.py`, `tests/test_uuids.py`, `tests/te
 
 These three fixes apply to formulas and dates that already exist in a document. They do not add formula writing.
 
-**Formula text keeps operator precedence** (`c43e702`, `2c8affd`). `cell.formula` lost grouping when it rebuilt text from the stored AST, so `(A1+B1)*2` was indistinguishable from `A1+B1*2`.
+**Formula text keeps operator precedence** (`c43e702`, `2c8affd`, `cc556a4`). `cell.formula` lost grouping when it rebuilt text from the stored AST, so `(A1+B1)*2` was indistinguishable from `A1+B1*2`. `cc556a4` brackets a percent whose operand ends in a division: percent commutes with multiplication but not division, so `(A1÷B1)%` used to render as `A1÷B1%`, which reads as `A1÷(B1%)`. Tests: `tests/test_formula_precedence.py`.
 
 **Timezone-aware dates are written with the correct offset** (`c43e702`). `DateCell` serialisation called `astimezone()` on a naive epoch, which assumed local time and shifted every timezone-aware write by the local UTC offset. The epoch is now anchored as UTC first. Documented in `docs/api/datetime.rst` (`fc554b6`).
 
@@ -87,7 +87,7 @@ These three fixes apply to formulas and dates that already exist in a document. 
 
 **Formula cells with an error value are kept on save** (`164b3c6`). `Cell._to_buffer()` had no branch for `ErrorCell`, so the catch-all returned `None` and dropped the cell's whole storage record, including `formula_id`. Any formula cell with a cached error lost `is_formula` on the next reopen. A dedicated branch now matches the on-disk shape. Test fixture: `tests/data/issue-42.numbers`. Test: `test_error_cell_formula_survives_save` in `tests/test_formulas.py` (added in `e73873e`).
 
-**Cross-table references resolve through either owner UUID** (`248ad88`). `table_uuids_to_id()` resolved a reference through only the `HAUNTED_OWNER`-kind chain. When a formula's AST embedded the table's `TABLE_MODEL`-kind owner instead, resolution failed silently and the reference rendered as local to the same table. It now indexes both owner kinds. Test: `test_cross_table_reference_resolves_via_table_model_owner` in `tests/test_formulas.py` (added in `e73873e`). See also [Known issues](#known-issues).
+**Cross-table references resolve through either owner UUID** (`248ad88`, `0cbc2e0`). `table_uuids_to_id()` resolved a reference through only the `HAUNTED_OWNER`-kind chain. When a formula's AST embedded the table's `TABLE_MODEL`-kind owner instead, resolution failed silently and the reference rendered as local to the same table. It now indexes both owner kinds. `0cbc2e0` builds that index before the early return for documents with no haunted owners, where it was never set, and resets it on every run. Tests: `test_cross_table_reference_resolves_via_table_model_owner` (added in `e73873e`) and `test_extra_owner_uuid_map_is_built_without_haunted_owners` in `tests/test_formulas.py`.
 
 ### Test suite
 
@@ -112,7 +112,7 @@ register_font("Roboto-Regular", family="Roboto")
 style = doc.add_style(font_name="Roboto")
 ```
 
-`name` is the PostScript name stored in the document, `family` is the name passed as `Style.font_name`, and it defaults to `name`. `style`, `bold` and `italic` describe the face. Documented in `docs/styles.rst` and `docs/limitations.rst` (`fc554b6`). Test: `test_register_font` in `tests/test_issues.py`.
+`name` is the PostScript name stored in the document, `family` is the name passed as `Style.font_name`, and it defaults to `name`. `style`, `bold` and `italic` describe the face. Documented in `docs/styles.rst` and `docs/limitations.rst` (`fc554b6`). `1604c7a` raises `ValueError` for a built-in font name or built-in family and style pair instead of replacing it, checks the argument types, and makes the family's regular face (style `"Regular"`, not bold or italic) the default for `Style(font_name=family)` whatever the registration order. Registering the same font again is allowed. Registration applies to the whole process. Tests: `test_register_font` in `tests/test_issues.py` and three tests in `tests/test_styles.py`, using a `restore_font_maps` fixture in `tests/conftest.py`.
 
 ### `Table.table_name_height` (`ddf1aef`)
 
@@ -187,17 +187,11 @@ Numbers stores portrait dimensions for landscape documents and records the orien
 
 ## Known issues
 
-A review of the fork's changes from `9ada0bd` to `7b871d2` found these problems. They are open; each was reproduced with a script against `Document()` or a file in `tests/data` unless it says otherwise.
+A review of the fork's changes from `9ada0bd` to `7b871d2` found nine problems. All nine are fixed in `cc556a4` to `a6c9e25` and described in the entries above. Comments that cited notes outside the repository now cite the commits and tests that hold the evidence (`a6c9e25`).
 
-1. **Deleting the last row or column can drop the outer border** (`a01ff9d`). `delete_row()` and `delete_column()` do not load cell borders first, as `add_row()` does, so the stroke sidecar shift removes the table's bottom or right border when the last row or column is deleted. The result depends on whether a border was read earlier in the session. The sidecar also keeps the old `row_count` and `column_count`.
-2. **Inserting a row at a horizontal border can draw two lines** (`897350e`). `reconcile_cell_borders()` copies a stale mirrored bottom border onto the next row's top. With a border between rows 0 and 1, `add_row(1, start_row=1)` gives a line above and below the new row.
-3. **`(A÷B)%` renders as `A÷B%`** (`c43e702`, `2c8affd`). Division and percent share a precedence tier on the basis that the scaling operators commute, which holds for multiplication but not division: `(A÷B)%` is A÷B÷100 and `A÷(B%)` is 100×A÷B.
-4. **Editing a reopened cell's style changes every cell that shares it** (`a01ff9d`). The cell data scan in `update_paragraph_styles()` writes the edit into the shared paragraph style, so all cells using it, and the named style, change. A cell whose font was not recognised when the document was read is saved with the default font after such an edit.
-5. **Header and footer cells report the body style's defaults** (`a01ff9d`). The table default fallback in `cell_bg_color()`, `cell_alignment()`, `cell_text_inset()` and `cell_text_wrap()` always uses the body cell style, so a never-styled header cell reports no fill although the header row style is grey.
-6. **The insert-side stroke shift has no effect** (`a01ff9d`). `add_row()` and `add_column()` load strokes first, which makes save rebuild the sidecar, so `shift_stroke_rows()` and `shift_stroke_columns()` change nothing observable on insert. The unreachable `_shift_stroke_runs_on_insert()` also grows a run that only touches the insert point. Checked by making both no-ops: all tests in `tests/test_borders.py` still pass.
-7. **`register_font()` default face depends on registration order, and can replace built-in fonts** (`24964d9`). The first face registered for a family becomes its default, and registering an existing font name replaces the shipped entry for the whole process.
-8. **Extra table owners are indexed only when the document has haunted owners** (`248ad88`). `calculate_table_uuid_map()` sets `_table_id_to_extra_owner_uuids` after the early return for documents without `HAUNTED_OWNER` archives. Found by reading the code; not reproduced.
-9. **Comments cite files that are not in the repository** (`numbers_uuid.py`, `model.py`, `formula.py`), for example a `fresh_eyes_findings_2026-08-28.md` handoff note and `row_storage_desync_bug_report.md`.
+Open:
+
+1. **An edited cell style is a full copy, not a variation of the table style.** When a cell-level property (fill, inset, wrap, vertical alignment) of a cell is edited, `add_cell_style()` writes a cell style with every cell property set and no link to the table's header, body or footer style. Numbers stores such an edit as a variation holding only the changed values, so a cell moved between header and body afterwards follows the table style for everything else. In this library the edited cell keeps all of its values. Text styles edited after reopening do follow the Numbers shape (`6dc407d`).
 
 ## Housekeeping commits
 
@@ -212,6 +206,9 @@ These commits change no library code:
 | `0b4b578` | Version 4.20.3 |
 | `adde724` | README rebuilt by the "Build README" workflow |
 | `1f3ca16` | Add this document |
+| `50bdce0`, `57683c5` | `ruff format` on older fork code and the fork's own test files |
+| `7b8c29e` and later commits that only edit this document | Update this document |
+| `b972272` | Explain the `test_memory_leaks` change in the test and in this document |
 
 ## Running the tests
 
@@ -226,4 +223,4 @@ Requirements outside the package:
 - `tests/test_issues.py` and `tests/test_unpack_numbers.py` import `python-magic`, which needs a native libmagic.
 - `tests/test_cat_numbers.py` and the CLI tests start subprocesses and need the `numbers-parser` console scripts on `PATH`.
 
-On the maintainer's Mac the full suite passed at an earlier point in this fork's history with 305 passed and 6 skipped. In the sandbox used to prepare 4.20.4, the suite passes with 325 passed and 6 skipped when the subprocess tests are deselected (`-k "not subprocess"`), which is 9 tests. After `ade2064`, the full suite including the subprocess tests passes locally with 341 passed and 6 skipped on Python 3.11 and 3.12 (`uv sync --locked`, `pytest -n logical`).
+On the maintainer's Mac the full suite passed at an earlier point in this fork's history with 305 passed and 6 skipped. In the sandbox used to prepare 4.20.4, the suite passes with 325 passed and 6 skipped when the subprocess tests are deselected (`-k "not subprocess"`), which is 9 tests. After `ade2064`, the full suite including the subprocess tests passes locally with 341 passed and 6 skipped on Python 3.11 and 3.12 (`uv sync --locked`, `pytest -n logical`). After the review fixes (`cc556a4` to `57683c5`), it passes with 361 passed and 6 skipped.

@@ -45,11 +45,9 @@ def test_uuid():
 # derived value, severing the table's formula dependency edges. That value
 # is the byte-reversal of the table's own TableModelArchive.table_id (a
 # string field) -- not an arithmetic derivation from anything else. These
-# two table_id/derived pairs are recorded, byte for byte, in
-# `Claude chat handoff notes/session_2026-08-28_artifacts/
-# fresh_eyes_findings_2026-08-28.md`, "Result (round 4)", from round-trip
-# experiments against real Numbers.app output (tables 3 and 4 of the "29"
-# test document pair).
+# two table_id/derived pairs come from round-trip experiments against real
+# Numbers.app output (tables 3 and 4 of the "29" test document pair);
+# commit 7158166 describes the mechanism those experiments established.
 
 
 def test_derive_table_identity_uuid_matches_recorded_numbers_output():

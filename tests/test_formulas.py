@@ -187,3 +187,15 @@ def test_named_ranges():
     for row_num, row in enumerate(table.iter_rows(min_row=1), start=1):
         if len(row) == 2 or row[2].value:
             assert row[0].formula == row[1].value, f"Reference Tests: row {row_num + 1}"
+
+
+def test_extra_owner_uuid_map_is_built_without_haunted_owners():
+    # issue-18 has no FormulaOwnerDependenciesArchive, so the haunted-owner
+    # path returns early; the TABLE_MODEL owner index must still be built
+    # and must not keep entries from an earlier run.
+    doc = Document("tests/data/issue-18.numbers")
+    model = doc._model
+    assert model._table_id_to_extra_owner_uuids == {}
+    model._table_id_to_extra_owner_uuids = {1: {"stale"}}
+    model.calculate_table_uuid_map()
+    assert model._table_id_to_extra_owner_uuids == {}

@@ -635,7 +635,9 @@ def test_multirow_vertical_border_grows_on_row_insert_within_span(configurable_s
     touching left/right layers' own stroke_run origin/length at all --
     so a multi-row vertical border kept its exact original physical
     span even after a row was inserted within it, silently misaligning
-    with the content that had actually shifted."""
+    with the content that had actually shifted. (The stroke sidecar is
+    no longer shifted: borders are loaded onto the cells before an
+    insert and the sidecar is rebuilt from them at save.)"""
     border = Border(1.0, RGB(0, 0, 0), "solid")
 
     doc = Document()
@@ -758,8 +760,8 @@ def test_multirow_vertical_border_grows_on_row_insert_within_span_single_session
     """The single-session mirror of
     test_multirow_vertical_border_grows_on_row_insert_within_span --
     no save/reopen between setting the border and inserting into its
-    span. Previously failed silently: shift_stroke_rows() only touches
-    the stroke sidecar, which is empty until the next save, so nothing
+    span. Previously failed silently: the stroke sidecar shift (since
+    removed) only touched the sidecar, which is empty until the next save, so nothing
     propagated the border onto the newly-inserted row until this fix's
     propagate_borders_into_inserted_rows() started comparing the
     span's own boundary cells directly."""
@@ -843,3 +845,91 @@ def test_border_delete_within_span_still_correct_single_session(configurable_sav
 
     bordered = [r for r in range(table.num_rows) if table.cell(r, 2).border.left is not None]
     assert bordered == [2, 3]
+
+
+def _boxed_table(path, num_rows=4, num_cols=3):
+    """Save a table with a border on every side of every cell, and reopen it."""
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+    doc = Document(num_rows=num_rows, num_cols=num_cols)
+    table = doc.sheets[0].tables[0]
+    for row in range(num_rows):
+        for col in range(num_cols):
+            table.set_cell_border(row, col, ["top", "right", "bottom", "left"], border)
+    doc.save(path)
+    return border
+
+
+def _sidecar_counts(table):
+    model = table._model
+    table_obj = model.objects[table._table_id]
+    sidecar = model.objects[table_obj.stroke_sidecar.identifier]
+    return sidecar.row_count, sidecar.column_count
+
+
+def test_deleting_the_last_row_keeps_the_outer_border(configurable_save_file):
+    border = _boxed_table(configurable_save_file)
+    doc = Document(configurable_save_file)
+    doc.sheets[0].tables[0].delete_row()
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert [table.cell(2, col).border.bottom for col in range(3)] == [border] * 3
+    assert _sidecar_counts(table) == (3, 3)
+
+
+def test_deleting_the_first_row_keeps_the_outer_border(configurable_save_file):
+    border = _boxed_table(configurable_save_file)
+    doc = Document(configurable_save_file)
+    doc.sheets[0].tables[0].delete_row(1, start_row=0)
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert [table.cell(0, col).border.top for col in range(3)] == [border] * 3
+
+
+def test_deleting_the_last_column_keeps_the_outer_border(configurable_save_file):
+    border = _boxed_table(configurable_save_file)
+    doc = Document(configurable_save_file)
+    doc.sheets[0].tables[0].delete_column()
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert [table.cell(row, 1).border.right for row in range(4)] == [border] * 4
+    assert _sidecar_counts(table) == (4, 2)
+
+
+def test_deleting_without_borders_updates_the_sidecar_size(configurable_save_file):
+    doc = Document(num_rows=4, num_cols=3)
+    doc.sheets[0].tables[0].set_cell_border(0, 0, "top", Border(1.0, RGB(0, 0, 0), "solid"))
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.delete_row(2, start_row=2)
+    table.delete_column(1, start_col=0)
+    doc.save(configurable_save_file)
+    assert _sidecar_counts(Document(configurable_save_file).sheets[0].tables[0]) == (2, 2)
+
+
+def test_inserting_a_row_at_a_horizontal_border_keeps_one_line(configurable_save_file):
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+    doc = Document(num_rows=4, num_cols=2)
+    doc.sheets[0].tables[0].set_cell_border(0, 0, "bottom", border, 2)
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    doc.sheets[0].tables[0].add_row(1, start_row=1)
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    tops = [table.cell(row, 0).border.top for row in range(table.num_rows)]
+    assert tops == [None, None, border, None, None]
+
+
+def test_inserting_a_column_at_a_vertical_border_keeps_one_line(configurable_save_file):
+    border = Border(1.0, RGB(0, 0, 0), "solid")
+    doc = Document(num_rows=2, num_cols=4)
+    doc.sheets[0].tables[0].set_cell_border(0, 0, "right", border, 2)
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    doc.sheets[0].tables[0].add_column(1, start_col=1)
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    lefts = [table.cell(0, col).border.left for col in range(table.num_cols)]
+    assert lefts == [None, None, border, None, None]
