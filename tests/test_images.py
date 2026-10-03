@@ -1,14 +1,20 @@
-import pytest
 import zipfile
 
+import pytest
+
 from numbers_parser import Document
+from numbers_parser.generated import TSAArchives_pb2 as TSAArchives
+from numbers_parser.generated import TSDArchives_pb2 as TSDArchives
+from numbers_parser.generated import TSWPArchives_pb2 as TSWPArchives
 
 
 def test_add_image_persists(configurable_save_file):
-    """A free-standing image, added to a sheet, should be registered
+    """
+    A free-standing image, added to a sheet, should be registered
     both as a drawable object (with the right position/size) and as an
     actual file in the document's own package -- confirmed via a
-    genuine save/reopen, not just an in-memory check."""
+    genuine save/reopen, not just an in-memory check.
+    """
     image_data = open("tests/data/cat.jpg", mode="rb").read()
 
     doc = Document()
@@ -38,10 +44,12 @@ def test_add_image_persists(configurable_save_file):
 
 
 def test_add_image_deduplicates_identical_content(configurable_save_file):
-    """The same image content, added twice under different filenames,
+    """
+    The same image content, added twice under different filenames,
     should be stored once (content-hash deduplication, the same
     mechanism add_cell_style()'s own bg_image support already uses),
-    not duplicated in the package."""
+    not duplicated in the package.
+    """
     image_data = open("tests/data/cat.jpg", mode="rb").read()
 
     doc = Document()
@@ -140,3 +148,67 @@ def test_duplicate_image(configurable_save_file):
     assert [i.y for i in images] == [500.0, 2.0]
     assert images[0].data == image_data
     assert images[0].filename == images[1].filename == "cat.jpg"
+
+
+def test_failed_add_image_leaves_no_record():
+    doc = Document()
+    sheet = doc.sheets[0]
+    sheet.add_image(b"first", "x.png")
+    with pytest.raises(IndexError, match="already exists"):
+        sheet.add_image(b"second", "x.png")
+    image = sheet.add_image(b"second", "y.png")
+    assert image.data == b"second"
+    assert image.filename == "y.png"
+    assert len(sheet.images) == 2
+
+
+def test_duplicate_image_owns_its_caption_title_and_mask(configurable_save_file):
+    doc = Document()
+    sheet = doc.sheets[0]
+    original = sheet.add_image(b"data", "x.png")
+    model = doc._model
+    source = model.objects[original._image_id]
+
+    def owned(field):
+        storage_id, _ = model.objects.create_object_from_dict(
+            "Document",
+            {},
+            TSWPArchives.StorageArchive,
+        )
+        info_id, info = model.objects.create_object_from_dict(
+            "Document",
+            {},
+            TSAArchives.CaptionInfoArchive,
+        )
+        info.super.owned_storage.identifier = storage_id
+        info.super.super.super.parent.identifier = original._image_id
+        getattr(source.super, field).identifier = info_id
+
+    owned("title")
+    owned("caption")
+    mask_id, mask = model.objects.create_object_from_dict("Document", {}, TSDArchives.MaskArchive)
+    mask.super.parent.identifier = original._image_id
+    source.mask.identifier = mask_id
+
+    copy = sheet.duplicate_image(original, y=100.0)
+    copied = model.objects[copy._image_id]
+    for field in ("title", "caption"):
+        old_info = model.objects[getattr(source.super, field).identifier]
+        new_info = model.objects[getattr(copied.super, field).identifier]
+        assert getattr(copied.super, field).identifier != getattr(source.super, field).identifier
+        assert new_info.super.owned_storage.identifier != old_info.super.owned_storage.identifier
+        assert new_info.super.super.super.parent.identifier == copy._image_id
+    assert copied.mask.identifier != mask_id
+    assert model.objects[copied.mask.identifier].super.parent.identifier == copy._image_id
+    doc.save(configurable_save_file)
+    assert len(Document(configurable_save_file).sheets[0].images) == 2
+
+
+def test_duplicate_image_from_another_sheet_raises():
+    doc = Document()
+    doc.add_sheet("Other")
+    image = doc.sheets[0].add_image(b"data", "x.png")
+    objects_before = len(doc._model.objects)
+    with pytest.raises(IndexError, match="no image with id"):
+        doc.sheets[1].duplicate_image(image)
+    assert len(doc._model.objects) == objects_before

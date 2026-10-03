@@ -269,10 +269,12 @@ class Style:
         ``True`` if text wrapping is enabled
     baseline_shift: float, optional, default: None
         Baseline shift in points (positive raises the text). ``None`` leaves the
-        value unset when a style is created, so it inherits from its parent.
+        value unset when a style is created. Reading an unset value returns the
+        direct parent's value, or 0.0.
     line_spacing: float, optional, default: None
         Relative line spacing as a multiple of the line height (1.0 is single
         spacing). ``None`` leaves the value unset when a style is created.
+        Reading follows the parent chain and returns ``None`` if nothing sets it.
 
     Raises
     ------

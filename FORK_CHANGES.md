@@ -129,7 +129,7 @@ copy = sheet.duplicate_image(image, y=900)    # placed directly behind the origi
 sheet.remove_image(image)
 ```
 
-Identical file content is stored once and shared between images through SHA1 deduplication. `remove_image` removes the drawable and leaves the package file in place, because another image can share it. Tests: `tests/test_images.py`. `Image` is documented in `docs/api/sheet.rst`. Duplicated images were checked by opening saved files in Numbers.app.
+Identical file content is stored once and shared between images through SHA1 deduplication. `add_image` raises `IndexError` if the file name is already used in the package, and records nothing when it does. `remove_image` removes the drawable and leaves the package file in place, because another image can share it. `duplicate_image` gives the copy its own title, caption (with its own text storage and placement) and mask, each with the copy as parent, and shares the file and style. It raises `IndexError`, before creating anything, if the image is not on that sheet. Tests: `tests/test_images.py`. `Image` is documented in `docs/api/sheet.rst`. Duplicated images were checked by opening saved files in Numbers.app before the title, caption and mask copying was added; images created by this library have none of those objects.
 
 ### Header and footer text (`ab18786`)
 
@@ -141,18 +141,18 @@ sheet.footer_char_runs()               # [(character_index, style id or None), .
 sheet.set_footer_text(text, runs=[(0, bold_id), (10, None), (12, light_id)])
 ```
 
-Setting text keeps the zone's existing style. Character style runs and the other per-character run tables are keyed to character offsets in the old text, so runs that start at or past the end of a shorter new text are dropped and the text after the last kept run takes that run's style. The optional `runs` argument replaces the character style runs outright, using the ids that `header_char_runs()` and `footer_char_runs()` return. Setting a zone that does not exist raises. Tests: `tests/test_header_footer.py`. Checked by opening saved files in Numbers.app.
+Setting text keeps the zone's existing style. Character style runs and the other per-character run tables are keyed to character offsets in the old text, so runs that start at or past the end of a shorter new text are dropped and the text after the last kept run takes that run's style. An attached object, such as the page number field in the default template's centre footer, is kept only where the new text still has its U+FFFC placeholder at the same index: `"￼ of 3"` keeps a field at index 0 and `"Draft"` drops it. The optional `runs` argument replaces the character style runs outright, using the ids that `header_char_runs()` and `footer_char_runs()` return, and works on a zone that has no runs yet. `runs` is checked before the zone changes, so an invalid list raises `ValueError` and leaves the text as it was. Setting a zone that does not exist raises. Tests: `tests/test_header_footer.py`. Checked by opening saved files in Numbers.app.
 
 ### `Style.baseline_shift` and `Style.line_spacing` (`ab18786`)
 
-`baseline_shift` is in points. `line_spacing` is a relative multiple of the line height, where 1.0 is single spacing. Both default to `None`, which leaves the value unset so a new style inherits it. Reading a style returns the effective value, following the parent chain. Only relative line spacing is reported: a style that uses exact, minimum, maximum or space-between spacing returns `None`, because those amounts are in points and do not fit one relative value.
+`baseline_shift` is in points. `line_spacing` is a relative multiple of the line height, where 1.0 is single spacing. Both default to `None`, which leaves the value unset when the style is created. Reading `line_spacing` follows the whole parent chain and returns `None` if no style in it sets a value. Reading `baseline_shift` looks at the style and its direct parent only, like the library's other character properties, and returns 0.0 when neither sets it. Only relative line spacing is reported: a style that uses exact, minimum, maximum or space-between spacing returns `None`, because those amounts are in points and do not fit one relative value.
 
 ```python
 style = doc.add_style(name="Tight", line_spacing=0.9, baseline_shift=-1.0)
 table.set_cell_style(0, 0, style)
 ```
 
-Tests: `tests/test_style_spacing.py`, covering create, save and reload, `None` round trip, and editing an existing style. Covered by unit tests only.
+Tests: `tests/test_style_spacing.py`, covering create, save and reload, unset values staying unset in the saved file, and editing an existing style. Covered by unit tests only.
 
 ### `Table.locked` (`ab18786`)
 

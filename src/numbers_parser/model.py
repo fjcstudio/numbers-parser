@@ -89,6 +89,10 @@ from numbers_parser.xrefs import CellRange, ScopedNameRefCache
 logger = logging.getLogger(__name__)
 debug = logger.debug
 
+# UTF-16 code unit of U+FFFC, the placeholder an attached object such as a
+# page number field occupies in a text storage.
+_PLACEHOLDER_UNIT = "\ufffc".encode("utf-16-le")
+
 
 class MergeCells:
     def __init__(self) -> None:
@@ -331,7 +335,8 @@ class _NumbersModel(Cacheable):
         ]
 
     def add_ruler_guide(self, sheet_id: int, axis: str, position: float) -> None:
-        """Add a ruler guide ("horizontal" or "vertical") at position, in points.
+        """
+        Add a ruler guide ("horizontal" or "vertical") at position, in points.
 
         The sheet's GuideStorageArchive is created on the first guide.
         """
@@ -378,6 +383,9 @@ class _NumbersModel(Cacheable):
         if digest in self._images:
             image_id = self._images[digest]
         else:
+            # Store the file first: it raises if the name is taken, and must
+            # do so before the DataInfo and digest are recorded.
+            self.store_image(data, filename)
             image_id = self.next_image_identifier()
             self.objects[PACKAGE_ID].datas.append(
                 TSPArchiveMessages.DataInfo(
@@ -389,7 +397,6 @@ class _NumbersModel(Cacheable):
                 ),
             )
             self._images[digest] = image_id
-            self.store_image(data, filename)
 
         image_info_id, image_info = self.objects.create_object_from_dict(
             "Document",
@@ -404,27 +411,46 @@ class _NumbersModel(Cacheable):
         return image_info_id
 
     def duplicate_image(self, sheet_id: int, image_id: int, x: float, y: float) -> int:
-        """Copy an image to (x, y) and return the copy's object ID.
-
-        The copy shares the source's package file and sits directly behind the
-        source. Its title and caption are new objects, since each image must
-        own them.
         """
+        Copy an image to (x, y) and return the copy's object ID.
+
+        The copy shares the source's package file and style, and sits directly
+        behind the source. Its title, caption and mask are new objects, since
+        each image must own them: a title or caption also gets its own text
+        storage and placement, and each owned copy's parent is the new image.
+        """
+        drawables = self.objects[sheet_id].drawable_infos
+        position = next((i for i, ref in enumerate(drawables) if ref.identifier == image_id), None)
+        if position is None:
+            msg = f"no image with id {image_id} on this sheet"
+            raise IndexError(msg)
+
         source = self.objects[image_id]
         copy_id, copy = self.objects.create_object_from_dict("Document", {}, type(source))
         copy.CopyFrom(source)
         for field in ("title", "caption"):
             if copy.super.HasField(field):
-                old = self.objects[getattr(copy.super, field).identifier]
-                new_id, new = self.objects.create_object_from_dict("Document", {}, type(old))
-                new.CopyFrom(old)
-                getattr(copy.super, field).identifier = new_id
+                info_ref = getattr(copy.super, field)
+                info_ref.identifier, info = self._copy_object(info_ref.identifier)
+                _set_drawable_parent(info, copy_id)
+                for path in (("super", "owned_storage"), ("placement",)):
+                    ref = _set_message_field(info, path)
+                    if ref is not None:
+                        ref.identifier, _ = self._copy_object(ref.identifier)
+        if copy.HasField("mask"):
+            copy.mask.identifier, mask = self._copy_object(copy.mask.identifier)
+            _set_drawable_parent(mask, copy_id)
         copy.super.geometry.position.x = x
         copy.super.geometry.position.y = y
-        drawables = self.objects[sheet_id].drawable_infos
-        position = next(i for i, ref in enumerate(drawables) if ref.identifier == image_id)
         drawables.insert(position, TSPMessages.Reference(identifier=copy_id))
         return copy_id
+
+    def _copy_object(self, object_id: int) -> tuple[int, object]:
+        """Copy an object into the Document archive and return (new id, new object)."""
+        source = self.objects[object_id]
+        new_id, new = self.objects.create_object_from_dict("Document", {}, type(source))
+        new.CopyFrom(source)
+        return new_id, new
 
     def _header_footer_storage(self, sheet_id: int, kind: str, zone: int):
         refs = getattr(self.objects[sheet_id], kind)
@@ -447,19 +473,33 @@ class _NumbersModel(Cacheable):
         ]
 
     def set_header_footer_text(
-        self, sheet_id: int, kind: str, zone: int, text: str, runs: list = None
+        self,
+        sheet_id: int,
+        kind: str,
+        zone: int,
+        text: str,
+        runs: list | None = None,
     ) -> None:
-        """Replace the text of a page header or footer zone.
+        r"""
+        Replace the text of a page header or footer zone.
 
         Style runs are kept for the part of the text they still cover and
         dropped past the end of the new text, so a shorter text leaves no
         run pointing beyond it. Text after the last kept run takes that run's style.
         If ``runs`` is given, it replaces the character style runs: a list of
         (character_index, object_id or None) as returned by
-        :meth:`header_footer_char_runs`.
+        :meth:`header_footer_char_runs`, with indices increasing and inside
+        the new text. ``runs`` is checked before anything changes.
+
+        An attached object such as a page number field is kept only where the
+        new text still has its U+FFFC placeholder at the same index, so
+        ``"\ufffc of 3"`` keeps a field at index 0 and ``"Draft"`` drops it.
         """
         storage = self._header_footer_storage(sheet_id, kind, zone)
-        length = len(text.encode("utf-16-le")) // 2
+        units = text.encode("utf-16-le")
+        length = len(units) // 2
+        if runs is not None:
+            _check_char_runs(runs, length)
         del storage.text[:]
         storage.text.append(text)
         for name in (
@@ -477,19 +517,26 @@ class _NumbersModel(Cacheable):
                 kept = [type(e).FromString(e.SerializeToString()) for e in keep]
                 del entries[:]
                 entries.extend(kept)
+        for name in ("table_attachment", "table_footnote"):
+            entries = getattr(storage, name).entries
+            keep = [
+                e
+                for e in entries
+                if e.character_index < length
+                and units[2 * e.character_index : 2 * e.character_index + 2] == _PLACEHOLDER_UNIT
+            ]
+            if len(keep) != len(entries):
+                kept = [type(e).FromString(e.SerializeToString()) for e in keep]
+                del entries[:]
+                entries.extend(kept)
         if runs is not None:
             entries = storage.table_char_style.entries
-            template = entries[0] if len(entries) else None
             del entries[:]
             for index, object_id in runs:
-                entry = type(template)() if template is not None else None
-                if entry is None:
-                    msg = "zone has no character style runs to extend"
-                    raise ValueError(msg)
+                entry = entries.add()
                 entry.character_index = index
                 if object_id is not None:
                     entry.object.identifier = object_id
-                entries.append(entry)
 
     def image_ids(self, sheet_id: int) -> list[int]:
         """Return the object IDs of the free-standing images on a sheet, back to front."""
@@ -514,7 +561,8 @@ class _NumbersModel(Cacheable):
         return data, info.preferred_file_name or info.file_name
 
     def remove_image(self, sheet_id: int, image_id: int) -> None:
-        """Remove an image from a sheet.
+        """
+        Remove an image from a sheet.
 
         The package file and its DataInfo stay, since another image can share
         them through SHA1 deduplication.
@@ -3959,3 +4007,43 @@ def field_references(obj: object) -> dict:
         for x in obj.ListFields()
         if isinstance(getattr(obj, x[0].name), TSPMessages.Reference)
     }
+
+
+def _set_message_field(message: object, path: tuple):
+    """Return the sub-message at an attribute path if every step is a set field, else None."""
+    for name in path:
+        if name not in message.DESCRIPTOR.fields_by_name or not message.HasField(name):
+            return None
+        message = getattr(message, name)
+    return message
+
+
+def _set_drawable_parent(message: object, parent_id: int) -> None:
+    """Point a drawable's parent reference, nested at any depth of ``super``, at parent_id."""
+    while "parent" not in message.DESCRIPTOR.fields_by_name:
+        if "super" not in message.DESCRIPTOR.fields_by_name:
+            return
+        message = message.super
+    message.parent.identifier = parent_id
+
+
+def _check_char_runs(runs: list, length: int) -> None:
+    """Raise ValueError unless runs are (index, object id or None) pairs with increasing indices in the text."""
+    last = -1
+    for run in runs:
+        if not isinstance(run, (tuple, list)) or len(run) != 2:
+            msg = f"character style run {run!r} must be (character_index, object_id or None)"
+            raise ValueError(msg)
+        index, object_id = run
+        if not isinstance(index, int) or isinstance(index, bool) or index <= last:
+            msg = f"character style run index {index!r} must be an integer above {last}"
+            raise ValueError(msg)
+        if index >= max(length, 1):
+            msg = f"character style run index {index} is past the end of the text ({length})"
+            raise ValueError(msg)
+        if object_id is not None and (
+            not isinstance(object_id, int) or isinstance(object_id, bool)
+        ):
+            msg = f"character style run object {object_id!r} must be an object id or None"
+            raise ValueError(msg)
+        last = index
