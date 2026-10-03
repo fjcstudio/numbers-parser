@@ -2,6 +2,8 @@
 
 This fork of [masaccio/numbers-parser](https://github.com/masaccio/numbers-parser) is at version 4.20.4. It branches from upstream at commit `9ada0bd` (version 4.20.0). `git log --no-merges 9ada0bd..main` lists the fork's commits, and every one appears in this document: code changes under bug fixes and new features, and version, lockfile and other housekeeping commits under [Housekeeping commits](#housekeeping-commits). This document lists every change, the problem it addresses, the commit that carries it, the tests that cover it, and what each change depends on. Commit hashes refer to this repository's `main` branch.
 
+The reviews of 2026-10-03, with every finding, how it was confirmed and what is still open, are in [`docs/reviews/2026-10-03-fork-review.md`](docs/reviews/2026-10-03-fork-review.md).
+
 Each bug fix is described the way it was reported: a symptom, the cause in the code, and the fix. Where a change was checked by opening files in Numbers.app, the entry says so. Where it is covered by unit tests only, the entry says that too.
 
 ## Contents
