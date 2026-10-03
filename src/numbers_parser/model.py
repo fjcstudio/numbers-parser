@@ -13,6 +13,8 @@ from struct import pack
 from typing import ClassVar
 from warnings import warn
 
+from google.protobuf import json_format
+
 from numbers_parser.bullets import (
     BULLET_CONVERSION,
     BULLET_PREFIXES,
@@ -217,6 +219,11 @@ class DataLists(Cacheable):
         """Return the an entry in a table's datalist matching a key."""
         self.add_table(table_id)
         return self._datalists[table_id]["by_key"][key]
+
+    def has_key(self, table_id: int, key: int) -> bool:
+        """Return True if a key has an entry in a table's datalist."""
+        self.add_table(table_id)
+        return key in self._datalists[table_id]["by_key"]
 
     def value_key(self, value):
         if hasattr(value, "DESCRIPTOR"):
@@ -2564,6 +2571,16 @@ class _NumbersModel(Cacheable):
         else:
             strikethru = CharacterStyle.StrikethruType.kNoStrikethru
         style_obj = self.objects[style._text_style_obj_id]
+        for color in (
+            style_obj.char_properties.font_color,
+            style_obj.char_properties.tsd_fill.color,
+        ):
+            # A style that never set a text color has no color model, which
+            # is a required field once any component of the color is set
+            if not color.HasField("model"):
+                color.model = TSPMessages.Color.rgb
+                color.a = 1.0
+                color.rgbspace = TSPMessages.Color.srgb
         style_obj.char_properties.font_color.r = style.font_color.r / 255
         style_obj.char_properties.font_color.g = style.font_color.g / 255
         style_obj.char_properties.font_color.b = style.font_color.b / 255
@@ -2689,6 +2706,14 @@ class _NumbersModel(Cacheable):
             style.super.parent.identifier = base_id
             style.super.is_variation = True
             style.override_count = 1
+        self._register_style_variation(style_id, style)
+        return style_id
+
+    def _register_style_variation(self, style_id: int, style: object) -> None:
+        """
+        List a new style in the stylesheet's styles and, when it has a parent,
+        under that parent in parent_to_children_style_map.
+        """
         stylesheet_id = self.objects[DOCUMENT_ID].stylesheet.identifier
         stylesheet = self.objects[stylesheet_id]
         style.super.stylesheet.identifier = stylesheet_id
@@ -2707,38 +2732,180 @@ class _NumbersModel(Cacheable):
                 entry = stylesheet.parent_to_children_style_map.add()
                 entry.parent.identifier = parent_id
             entry.children.append(TSPMessages.Reference(identifier=style_id))
-        return style_id
 
     def update_cell_styles(self, table_id: int, data: list) -> None:
         """
         Create new cell style archives for any cells whose styles
         have changes that require a cell style.
+
+        A style registered with the document (add_style) becomes a named cell
+        style holding every cell property. A cell's own edit is stored the way
+        Numbers stores a cell override: an unnamed variation of the table's
+        header, body or footer cell style for that position, holding only the
+        properties that differ from it. Removing a fill the table style
+        provides is stored as an empty fill, which Numbers also uses for "no fill".
         """
         cell_styles = {}
+        registered = {id(x) for x in self.styles.values()}
         for _, cells in enumerate(data):
             for _, cell in enumerate(cells):
-                if cell._style is not None and cell._style._update_cell_style:
-                    fingerprint = (
-                        str(cell.style.alignment.vertical)
-                        + str(cell.style.first_indent)
-                        + str(cell.style.left_indent)
-                        + str(cell.style.right_indent)
-                        + str(cell.style.text_inset)
-                        + str(cell.style.text_wrap)
-                    )
-                    if cell._style.bg_color is not None:
-                        fingerprint = fingerprint + (
-                            str(cell.style.bg_color.r)
-                            + str(cell.style.bg_color.g)
-                            + str(cell.style.bg_color.b)
-                        )
-                    if cell._style.bg_image is not None:
-                        fingerprint += cell._style.bg_image.filename
-                    if fingerprint not in cell_styles:
-                        cell_styles[fingerprint] = self.add_cell_style(cell._style)
-                    cell._style._cell_style_obj_id = cell_styles[fingerprint]
+                if cell._style is None or not cell._style._update_cell_style:
+                    continue
+                style = cell._style
+                base_id = None if id(style) in registered else self._default_cell_style_id(cell)
+                overrides = None if base_id is None else self._cell_style_overrides(base_id, style)
+                if overrides is not None:
+                    if not overrides:
+                        # Same as the table's own style for this position
+                        style._cell_style_obj_id = None
+                        cell._cell_style_id = None
+                        continue
+                    key = ("variation", base_id, repr(overrides))
+                    if key not in cell_styles:
+                        cell_styles[key] = self._add_cell_style_variation(base_id, overrides)
+                    style._cell_style_obj_id = cell_styles[key]
+                    continue
+                fingerprint = (
+                    str(style.alignment.vertical)
+                    + str(style.first_indent)
+                    + str(style.left_indent)
+                    + str(style.right_indent)
+                    + str(style.text_inset)
+                    + str(style.text_wrap)
+                )
+                if style.bg_color is not None:
+                    fingerprint += repr(style.bg_color)
+                if style.bg_image is not None:
+                    fingerprint += style.bg_image.filename
+                if fingerprint not in cell_styles:
+                    cell_styles[fingerprint] = self.add_cell_style(style)
+                style._cell_style_obj_id = cell_styles[fingerprint]
 
-    def add_cell_style(self, style: Style) -> int:
+    def _cell_style_overrides(self, base_id: int, style: Style) -> dict:
+        """
+        Return the cell_properties of a style that differ from the base cell
+        style, as a dict for a variation of it.
+        """
+        base = self.objects[base_id]
+        overrides = {}
+        if style.bg_image is not None:
+            if not self._fill_has_image(self._style_fill(base), style.bg_image):
+                overrides.update(self._cell_fill_attrs(style))
+        else:
+            base_fill = self._style_fill(base)
+            base_has_fill = base_fill is not None and any(
+                base_fill.HasField(x) for x in ("color", "gradient", "image")
+            )
+            if style.bg_color is None:
+                if base_has_fill:
+                    # An empty fill is how Numbers stores "no fill"
+                    overrides["cell_fill"] = {}
+            elif style.bg_color != self._fill_colors(base_fill):
+                current = (
+                    self._style_fill(self.objects[style._cell_style_obj_id])
+                    if style._cell_style_obj_id is not None
+                    else None
+                )
+                if current is not None and self._fill_colors(current) == style.bg_color:
+                    # Unchanged since it was read: keep the stored fill exactly,
+                    # which holds more than the list of colors reads back
+                    overrides["cell_fill"] = json_format.MessageToDict(
+                        current,
+                        preserving_proto_field_name=True,
+                    )
+                else:
+                    overrides.update(self._cell_fill_attrs(style))
+        inset = self.cell_property(base, "padding").left
+        if style.text_inset != inset:
+            overrides["padding"] = {
+                "left": style.text_inset,
+                "top": style.text_inset,
+                "right": style.text_inset,
+                "bottom": style.text_inset,
+            }
+        if style.text_wrap != self.cell_property(base, "text_wrap"):
+            overrides["text_wrap"] = style.text_wrap
+        if int(style.alignment.vertical) != self.cell_property(base, "vertical_alignment"):
+            overrides["vertical_alignment"] = style.alignment.vertical
+        return overrides
+
+    def _fill_has_image(self, fill: object | None, image: object) -> bool:
+        """Return True if a fill is an image fill holding the same image data."""
+        if fill is None or not fill.HasField("image"):
+            return False
+        image_id = fill.image.imagedata.identifier
+        digest = sha1(image.data).digest()  # noqa: S324
+        return any(
+            x.identifier == image_id and x.digest == digest for x in self.objects[PACKAGE_ID].datas
+        )
+
+    def _style_fill(self, style: object) -> object | None:
+        """Return a cell style's fill, following parent styles when it has none."""
+        while style is not None:
+            if style.cell_properties.HasField("cell_fill"):
+                return style.cell_properties.cell_fill
+            if not style.super.HasField("parent"):
+                return None
+            style = self.objects[style.super.parent.identifier]
+        return None
+
+    def _add_cell_style_variation(self, parent_id: int, cell_properties: dict) -> int:
+        """Create an unnamed variation of a cell style, as Numbers stores a cell override."""
+        style_id, style = self.objects.create_object_from_dict(
+            "DocumentStylesheet",
+            {
+                "super": {"is_variation": True, "parent": {"identifier": parent_id}},
+                "override_count": len(cell_properties),
+                "cell_properties": cell_properties,
+            },
+            TSTArchives.CellStyleArchive,
+        )
+        self._register_style_variation(style_id, style)
+        return style_id
+
+    @staticmethod
+    def _gradient_attrs(colors: list) -> dict:
+        """
+        Return a linear gradient fill for a list of colors, with evenly spaced
+        stops, in the shape Numbers writes for a gradient set in its Fill
+        controls (vertical, advanced gradient).
+        """
+        last = max(len(colors) - 1, 1)
+        return {
+            "type": "Linear",
+            "stops": [
+                {
+                    "color": {
+                        "model": "rgb",
+                        "r": color.r / 255,
+                        "g": color.g / 255,
+                        "b": color.b / 255,
+                        "a": 1.0,
+                        "rgbspace": "srgb",
+                    },
+                    "fraction": index / last,
+                    "inflection": 0.5,
+                }
+                for index, color in enumerate(colors)
+            ],
+            "opacity": 1.0,
+            "advancedGradient": True,
+            "anglegradient": {"gradientangle": 4.71238899},
+        }
+
+    @staticmethod
+    def _fill_colors(fill: object) -> RGB | list[RGB] | None:
+        """Return a cell fill as a color, a list of gradient colors, or None."""
+        if fill is None:
+            return None
+        if fill.HasField("color"):
+            return rgb(fill.color)
+        if fill.HasField("gradient"):
+            return [rgb(stop.color) for stop in fill.gradient.stops]
+        return None
+
+    def _cell_fill_attrs(self, style: Style) -> dict:
+        """Return the cell_properties entry for a style's fill, or an empty dict."""
         if style.bg_image is not None:
             digest = sha1(style.bg_image.data).digest()  # noqa: S324
             if digest in self._images:
@@ -2756,6 +2923,10 @@ class _NumbersModel(Cacheable):
                     ),
                 )
                 self._images[digest] = image_id
+                # Setting Style.bg_image on a cell does not go through add_style(),
+                # which stores the file; without it the saved reference dangles
+                if f"Data/{style.bg_image.filename}" not in self.objects.file_store:
+                    self.store_image(style.bg_image.data, style.bg_image.filename)
             color_attrs = {
                 "cell_fill": {
                     "image": {
@@ -2765,6 +2936,8 @@ class _NumbersModel(Cacheable):
                     },
                 },
             }
+        elif isinstance(style.bg_color, list):
+            color_attrs = {"cell_fill": {"gradient": self._gradient_attrs(style.bg_color)}}
         elif style.bg_color is not None:
             color_attrs = {
                 "cell_fill": {
@@ -2780,6 +2953,10 @@ class _NumbersModel(Cacheable):
             }
         else:
             color_attrs = {}
+        return color_attrs
+
+    def add_cell_style(self, style: Style) -> int:
+        color_attrs = self._cell_fill_attrs(style)
         cell_style_id, cell_style = self.objects.create_object_from_dict(
             "DocumentStylesheet",
             {
@@ -3000,14 +3177,8 @@ class _NumbersModel(Cacheable):
                 field = "footer_row_text_style"
         return getattr(table_model, field).identifier
 
-    def default_cell_style(self, cell: Cell) -> object | None:
-        """
-        Return the table's own default cell style for a cell's position, or
-        None if the table has none: the header row, header column or footer
-        row style, else the body style, chosen the same way as
-        :meth:`cell_text_style`. Used as the fallback for a cell with no
-        explicit per-cell style, in place of this library's generic constants.
-        """
+    def _default_cell_style_id(self, cell: Cell) -> int | None:
+        """Return the id of the table's default cell style for a cell's position, or None."""
         table_model = self.objects[cell._table_id]
         field = "body_cell_style"
         if cell.row in range(table_model.number_of_header_rows):
@@ -3020,7 +3191,18 @@ class _NumbersModel(Cacheable):
                 field = "footer_row_style"
         if not table_model.HasField(field):
             return None
-        return self.objects[getattr(table_model, field).identifier]
+        return getattr(table_model, field).identifier
+
+    def default_cell_style(self, cell: Cell) -> object | None:
+        """
+        Return the table's own default cell style for a cell's position, or
+        None if the table has none: the header row, header column or footer
+        row style, else the body style, chosen the same way as
+        :meth:`cell_text_style`. Used as the fallback for a cell with no
+        explicit per-cell style, in place of this library's generic constants.
+        """
+        style_id = self._default_cell_style_id(cell)
+        return None if style_id is None else self.objects[style_id]
 
     def cell_alignment(self, cell: Cell) -> Alignment:
         style = self.cell_text_style(cell)
@@ -3047,7 +3229,9 @@ class _NumbersModel(Cacheable):
         else:
             style = self.table_style(cell._table_id, cell._cell_style_id)
 
-        cell_properties = style.cell_properties.cell_fill
+        cell_properties = self._style_fill(style)
+        if cell_properties is None:
+            return None
 
         if cell_properties.HasField("color"):
             return rgb(cell_properties.color)
