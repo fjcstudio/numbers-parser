@@ -248,3 +248,47 @@ def test_deeply_nested_expression_round_trips_through_save_reload(configurable_s
     table2 = doc2.sheets[0].tables[0]
     assert table2.cell(1, 0).formula == "(A1-B1)×(C1+1.0)"
     assert table2.cell(1, 0).value == 6.0
+
+
+def test_percent_needs_parens_around_division():
+    # (A1/B1)% != A1/(B1%): 0.0166 vs 166.7 for A1=5, B1=3.
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_DIV),
+        _op_node(_PERCENT),
+    ]
+    _write_raw_formula(table, 1, 0, seq, 0.0166)
+    assert table.cell(1, 0).formula == "(A1÷B1)%"
+
+
+def test_percent_of_division_as_percent_operand_stays_unbracketed():
+    # A1/(B1%) renders with the percent bracketed, as before.
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_PERCENT),
+        _op_node(_DIV),
+    ]
+    _write_raw_formula(table, 1, 0, seq, 166.7)
+    assert table.cell(1, 0).formula == "A1÷(B1%)"
+
+
+def test_percent_needs_parens_when_division_ends_a_product():
+    # A1*(B1/C1) renders as A1×B1÷C1; a following % would attach to C1.
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _ref_node(1, 0, 0, 2),
+        _op_node(_DIV), _op_node(_MUL), _op_node(_PERCENT),
+    ]
+    _write_raw_formula(table, 1, 0, seq, 0.075)
+    assert table.cell(1, 0).formula == "(A1×B1÷C1)%"
+
+
+def test_percent_needs_parens_around_negated_division():
+    # (-(A1/B1))% != -A1/(B1%).
+    _doc, table = _table_with_values()
+    seq = [
+        _ref_node(1, 0, 0, 0), _ref_node(1, 0, 0, 1), _op_node(_DIV),
+        _op_node(_NEG), _op_node(_PERCENT),
+    ]
+    _write_raw_formula(table, 1, 0, seq, -0.0166)
+    assert table.cell(1, 0).formula == "(-A1÷B1)%"

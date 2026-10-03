@@ -21,16 +21,21 @@ class _PrecStr(str):
     need parentheses under any enclosing operator.
     """
 
-    def __new__(cls, value, precedence):
+    __slots__ = ("precedence", "trailing_div")
+
+    def __new__(cls, value, precedence, trailing_div=False):
         obj = str.__new__(cls, value)
         obj.precedence = precedence
+        # True when the text ends in a division whose divisor a following
+        # "%" would attach to, e.g. "A1÷B1" or "A1×B1÷C1".
+        obj.trailing_div = trailing_div
         return obj
 
 
 # Lower binds looser, matching standard spreadsheet operator
 # precedence: comparisons loosest, then concatenation, then addition/
 # subtraction, then multiplication/division/unary-minus/percent
-# (sharing a tier -- see _SCALING_OPS below), then exponentiation.
+# (sharing a tier, see the comment after this table), then exponentiation.
 _PRECEDENCE = {
     "equals": 1,
     "not_equals": 1,
@@ -48,11 +53,12 @@ _PRECEDENCE = {
     "power": 6,
 }
 
-# mul, div, negate, and percent are all pure scaling operations (multiply
-# by a constant), which is why they share one precedence tier above: any
-# one of them commutes exactly with any other, e.g. -(A*B) == (-A)*B ==
-# A*(-B), and (A+B)/100 has no equivalent shortcut through percent, but
-# (A*B)% == A*(B%) does -- confirmed by direct calculation, not assumed.
+# mul, div, negate, and percent share one precedence tier above. Negation
+# commutes with all of them, e.g. -(A*B) == (-A)*B and -(A/B) == (-A)/B,
+# and percent commutes with multiplication, (A*B)% == A*(B%). Percent does
+# NOT commute with division: (A/B)% is A/B/100 but A/(B%) is 100*A/B, so a
+# percent whose operand text ends in a division is always bracketed (see
+# _PrecStr.trailing_div and percent()).
 # That means negate()/percent()'s own operand never needs parentheses
 # when it comes from this same family, but DOES need them from any other
 # operator, INCLUDING power -- despite power's _PRECEDENCE value being
@@ -97,6 +103,10 @@ def _wrap_right(operand, parent_op: str) -> str:
     return str(operand)
 
 
+def _trailing_div(operand) -> bool:
+    return getattr(operand, "trailing_div", False)
+
+
 def _wrap_unary(operand, own_precedence: int) -> str:
     """
     Wrap negate()/percent()'s own operand, unless it's atomic or from
@@ -106,10 +116,9 @@ def _wrap_unary(operand, own_precedence: int) -> str:
     percent's despite needing parentheses.
     """
     p = _prec(operand)
-    if p != _ATOM_PRECEDENCE and p != own_precedence:
+    if p not in (_ATOM_PRECEDENCE, own_precedence):
         return f"({operand})"
     return str(operand)
-
 
 
 class Formula(list):
@@ -180,7 +189,7 @@ class Formula(list):
     def div(self, *args) -> None:
         arg2, arg1 = self.popn(2)
         text = f"{_wrap_left(arg1, 'div')}÷{_wrap_right(arg2, 'div')}"
-        self.push(_PrecStr(text, _PRECEDENCE["div"]))
+        self.push(_PrecStr(text, _PRECEDENCE["div"], trailing_div=True))
 
     def empty(self, *args) -> None:
         self.push("")
@@ -239,10 +248,7 @@ class Formula(list):
 
     def less_than_or_equal(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        text = (
-            f"{_wrap_left(arg1, 'less_than_or_equal')}"
-            f"≤{_wrap_right(arg2, 'less_than_or_equal')}"
-        )
+        text = f"{_wrap_left(arg1, 'less_than_or_equal')}≤{_wrap_right(arg2, 'less_than_or_equal')}"
         self.push(_PrecStr(text, _PRECEDENCE["less_than_or_equal"]))
 
     def list(self, *args) -> None:
@@ -253,13 +259,16 @@ class Formula(list):
 
     def mul(self, *args) -> None:
         arg2, arg1 = self.popn(2)
-        text = f"{_wrap_left(arg1, 'mul')}×{_wrap_right(arg2, 'mul')}"
-        self.push(_PrecStr(text, _PRECEDENCE["mul"]))
+        right = _wrap_right(arg2, "mul")
+        text = f"{_wrap_left(arg1, 'mul')}×{right}"
+        trailing_div = right == str(arg2) and _trailing_div(arg2)
+        self.push(_PrecStr(text, _PRECEDENCE["mul"], trailing_div=trailing_div))
 
     def negate(self, *args) -> None:
         arg1 = self.pop()
-        text = f"-{_wrap_unary(arg1, _PRECEDENCE['negate'])}"
-        self.push(_PrecStr(text, _PRECEDENCE["negate"]))
+        operand = _wrap_unary(arg1, _PRECEDENCE["negate"])
+        trailing_div = operand == str(arg1) and _trailing_div(arg1)
+        self.push(_PrecStr(f"-{operand}", _PRECEDENCE["negate"], trailing_div=trailing_div))
 
     def not_equals(self, *args) -> None:
         arg2, arg1 = self.popn(2)
@@ -276,8 +285,8 @@ class Formula(list):
 
     def percent(self, *args) -> None:
         arg1 = self.pop()
-        text = f"{_wrap_unary(arg1, _PRECEDENCE['percent'])}%"
-        self.push(_PrecStr(text, _PRECEDENCE["percent"]))
+        operand = f"({arg1})" if _trailing_div(arg1) else _wrap_unary(arg1, _PRECEDENCE["percent"])
+        self.push(_PrecStr(f"{operand}%", _PRECEDENCE["percent"]))
 
     def power(self, *args) -> None:
         arg2, arg1 = self.popn(2)
