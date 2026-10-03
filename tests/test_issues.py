@@ -763,6 +763,7 @@ def test_issue_174(configurable_save_file):
         assert cell.style.font_size == styles[i].font_size
 
 
+@pytest.mark.usefixtures("restore_font_maps")
 def test_register_font(configurable_save_file):
     from numbers_parser import register_font
 

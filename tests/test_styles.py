@@ -12,9 +12,16 @@ from numbers_parser import (
     Style,
     UnsupportedWarning,
     VerticalJustification,
+    register_font,
 )
 from numbers_parser.cell import DEFAULT_ALIGNMENT_CLASS
-from numbers_parser.constants import DEFAULT_FONT, DEFAULT_FONT_SIZE, DOCUMENT_ID
+from numbers_parser.constants import (
+    DEFAULT_FONT,
+    DEFAULT_FONT_SIZE,
+    DOCUMENT_ID,
+    FONT_FAMILY_DEFAULT,
+    FONT_MAP,
+)
 from numbers_parser.iwafile import find_extension
 
 TEST_NUMBERED_REF = [
@@ -607,3 +614,37 @@ def test_parentless_theme_presets_save_without_crashing(configurable_save_file):
     styles = reopened._model.available_paragraph_styles()
     assert len(styles) == len(presets)
     assert all(style.font_name == DEFAULT_FONT for style in styles.values())
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_register_font_prefers_the_regular_face_as_family_default():
+    register_font("Roboto-Bold", family="Roboto", style="Bold", bold=True)
+    register_font("Roboto-Light", family="Roboto", style="Light")
+    assert Style(font_name="Roboto")._font_details["name"] == "Roboto-Bold"
+    register_font("Roboto-Regular", family="Roboto")
+    assert Style(font_name="Roboto")._font_details["name"] == "Roboto-Regular"
+    register_font("Roboto-Italic", family="Roboto", style="Italic", italic=True)
+    assert Style(font_name="Roboto")._font_details["name"] == "Roboto-Regular"
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_register_font_rejects_built_in_fonts():
+    builtin = FONT_FAMILY_DEFAULT[DEFAULT_FONT]
+    with pytest.raises(ValueError, match="built-in font"):
+        register_font(builtin["name"], family="Something Else")
+    with pytest.raises(ValueError, match="built-in font"):
+        register_font("Not-A-Real-Font", family=builtin["family"], style=builtin["style"])
+    assert FONT_MAP[builtin["name"]] == builtin
+    # Registering the same custom font again is allowed
+    register_font("fjcstudioLight")
+    register_font("fjcstudioLight")
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_register_font_argument_types():
+    with pytest.raises(TypeError, match="non-empty string"):
+        register_font("")
+    with pytest.raises(TypeError, match="must be strings"):
+        register_font("Roboto-Regular", family=1)
+    with pytest.raises(TypeError, match="bold argument must be boolean"):
+        register_font("Roboto-Bold", bold="yes")

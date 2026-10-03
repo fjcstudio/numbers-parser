@@ -1,6 +1,7 @@
 import pytest
 
 import numbers_parser.experimental as experimental
+from numbers_parser.constants import FONT_FAMILY_DEFAULT, FONT_MAP, FONT_TUPLE_MAP
 
 
 def pytest_addoption(parser):
@@ -65,3 +66,14 @@ def configurable_multi_save_file_fixture(request, tmp_path, pytestconfig):
     else:
         new_filenames = [str(new_filename).replace(".", f"-{x}.") for x in range(num_files)]
         yield new_filenames
+
+
+@pytest.fixture(name="restore_font_maps")
+def restore_font_maps_fixture():
+    """Restore the module-level font maps after a test that calls register_font()."""
+    font_maps = (FONT_MAP, FONT_TUPLE_MAP, FONT_FAMILY_DEFAULT)
+    saved = [dict(font_map) for font_map in font_maps]
+    yield
+    for font_map, saved_map in zip(font_maps, saved, strict=True):
+        font_map.clear()
+        font_map.update(saved_map)
