@@ -3364,221 +3364,99 @@ class _NumbersModel(Cacheable):
         ):
             self.set_cell_border(table_id, row, col, side, border_value)
 
-    def _shift_stroke_runs_on_insert(self, layer_ids, insert_at: int, n: int) -> None:
+    def load_borders_for_edit(self, table_id: int) -> None:
         """
-        Shared by shift_stroke_rows/shift_stroke_columns for the
-        CROSS-axis layers -- e.g. called by shift_stroke_rows on
-        left_column_stroke_layers/right_column_stroke_layers, whose own
-        stroke_runs (origin/length) represent a ROW range, the axis
-        being inserted into, even though the enclosing layer's own
-        row_column_index represents the (unaffected) column.
+        Load every cell's border from the stroke sidecar and mark the table so
+        save rebuilds the sidecar from the cells' borders.
 
-        Same "shift the whole thing, or grow it, or leave it alone"
-        principle already used for SUM formula ranges
-        (insert_rows_with_formula_repair): a run entirely at or after
-        insert_at shifts by n; a run insert_at falls WITHIN grows by n
-        (its own origin stays put, only its length changes); a run
-        entirely before insert_at is unaffected.
+        Called before rows or columns are inserted or deleted: once borders are
+        held on the cells, they move with the cells, and the rebuilt sidecar
+        takes the table's new size.
+        """
+        self.extract_strokes(table_id)
+        self._update_strokes[table_id] = True
 
-        Confirmed directly this was missing: shift_stroke_rows/
-        shift_stroke_columns originally only adjusted row_column_index
-        on the SAME-axis layers (top/bottom for rows, left/right for
-        columns) -- correct there, since row_column_index directly IS
-        the row/column for those. But a vertical border's own row range
-        (or a horizontal border's own column range) lives in the
-        CROSS-axis layers' stroke_runs instead, which nothing was
-        adjusting at all: a multi-row vertical border's run kept its
-        original origin/length completely unchanged after a row was
-        inserted within its own span, silently misaligning it with the
-        content that had actually shifted.
-        """
-        for layer_id in layer_ids:
-            layer = self.objects[layer_id.identifier]
-            for run in layer.stroke_runs:
-                if insert_at <= run.origin:
-                    run.origin += n
-                elif run.origin < insert_at <= run.origin + run.length:
-                    run.length += n
-                # else: insert_at > run.origin + run.length -- unaffected
+    def _border_cell(self, table_id: int, side: str, row: int, col: int):
+        cell = self.cell_for_stroke(table_id, side, row, col)
+        return cell._border if cell is not None else None
 
-    def _shift_stroke_runs_on_delete(self, layer_ids, start: int, n: int) -> None:
+    def prepare_borders_for_insert(self, table_id: int, axis: str, start: int) -> None:
         """
-        The delete-side mirror of _shift_stroke_runs_on_insert -- see
-        that method's own docstring for which layers this applies to
-        and why. Handles a deleted range overlapping a run's own origin/
-        length in any of the ways that's possible: entirely before it
-        (shift back), entirely within it (shrink), overlapping only the
-        run's own start or end (clip to whatever survives), or entirely
-        containing the run (remove it -- nothing of it survives).
-        """
-        deleted_end = start + n
-        for layer_id in layer_ids:
-            layer = self.objects[layer_id.identifier]
-            for i in range(len(layer.stroke_runs) - 1, -1, -1):
-                run = layer.stroke_runs[i]
-                run_start = run.origin
-                run_end = run.origin + run.length
-                if deleted_end <= run_start:
-                    # Deleted range entirely before this run -- shift back.
-                    run.origin -= n
-                elif start >= run_end:
-                    # Deleted range entirely after this run -- unaffected.
-                    continue
-                elif start <= run_start and deleted_end >= run_end:
-                    # Deleted range entirely contains this run -- remove it.
-                    del layer.stroke_runs[i]
-                else:
-                    # Partial overlap -- clip origin/length to whatever
-                    # of the run's own span survives outside the deleted
-                    # range, then account for the rows/columns removed
-                    # before whatever's left.
-                    surviving_before = max(0, start - run_start)
-                    surviving_after = max(0, run_end - deleted_end)
-                    run.length = surviving_before + surviving_after
-                    if start <= run_start:
-                        run.origin = start
-                    # else run.origin (before the deleted range) is unchanged
+        Before rows or columns are inserted at ``start``, keep the line on the
+        boundary there with the row or column that moves.
 
-    def shift_stroke_rows(self, table_id: int, start_row: int, n_rows: int) -> None:
+        A line between two rows is held on the lower row's top and mirrored on
+        the upper row's bottom (likewise right and left for columns). The new
+        rows go between the two, so the upper row's mirror is cleared and the
+        line stays on the moving row's top only; otherwise the save would draw
+        it on both sides of the new rows.
         """
-        Shift every stroke layer's own row_column_index at or after
-        start_row by n_rows, on both the top-row and bottom-row stroke
-        layers -- the row-axis counterpart to what add_row() already
-        does for cell data (reassigning each Cell object's own .row).
-        Also adjusts left-column/right-column stroke layers' own
-        stroke_runs, whose origin/length represent a ROW range even
-        though those layers' own row_column_index is a column -- see
-        _shift_stroke_runs_on_insert's own docstring for why this
-        second part is needed too, confirmed as a separate, genuine
-        gap from the row_column_index one.
-
-        Confirmed directly this was previously missing entirely:
-        add_row() shifts cell values/styles correctly by moving Cell
-        objects and reassigning their own .row/.col, but the stroke
-        sidecar is a completely separate structure (keyed by its own
-        row_column_index, independent of any Cell object) that add_row()
-        never touched at all. The practical effect: a row's border stays
-        behind at its OLD physical row index after add_row() shifts its
-        content to a new one -- confirmed with a real, multi-row table
-        and a genuine save/reopen/insert/save cycle, not just an
-        in-memory check (the in-memory state can look deceptively
-        correct immediately after add_row(), before this asymmetry
-        between cell data and stroke data actually surfaces).
-        """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
+        self.load_borders_for_edit(table_id)
+        data = self._table_data[table_id]
+        before, after = ("bottom", "top") if axis == "row" else ("right", "left")
+        size = len(data) if axis == "row" else len(data[0])
+        if not 0 < start < size:
             return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            for layer_id in layer_ids:
-                layer = self.objects[layer_id.identifier]
-                if layer.row_column_index >= start_row:
-                    layer.row_column_index += n_rows
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_insert(layer_ids, start_row, n_rows)
+        for i in range(len(data[0]) if axis == "row" else len(data)):
+            upper = (start - 1, i) if axis == "row" else (i, start - 1)
+            lower = (start, i) if axis == "row" else (i, start)
+            upper_border = self._border_cell(table_id, before, *upper)
+            lower_border = self._border_cell(table_id, after, *lower)
+            if upper_border is None:
+                continue
+            line = getattr(lower_border, after, None) if lower_border is not None else None
+            if line is None:
+                line = getattr(upper_border, before)
+            setattr(upper_border, before, None)
+            if lower_border is not None:
+                setattr(lower_border, after, line)
 
-    def shift_stroke_rows_on_delete(self, table_id: int, start_row: int, n_rows: int) -> None:
+    def prepare_borders_for_delete(self, table_id: int, axis: str, start: int, n: int) -> None:
         """
-        The delete-side mirror of shift_stroke_rows -- see that
-        method's own docstring for the full reasoning; delete_row() has
-        the identical gap add_row() had, just in the opposite
-        direction: it correctly moves the remaining Cell objects'
-        own .row/.col up to close the gap, but never touched the stroke
-        sidecar, so a border at or after the deleted rows stayed behind
-        at its OLD row index rather than following its content up to
-        the new one. Confirmed directly, symmetrically to the insert
-        case.
+        Before rows or columns ``start`` to ``start + n - 1`` are deleted, set
+        the borders of the rows or columns that become neighbours.
 
-        A stroke layer whose own row_column_index falls WITHIN the
-        deleted range is removed outright -- the row it was on no
-        longer exists at all, so there's nothing left for it to
-        describe. A stroke layer after the deleted range has its
-        row_column_index decremented by n_rows, the same way add_row()
-        (via shift_stroke_rows) already increments one after an
-        insertion.
+        Deleting from the middle joins the rows either side, so the upper row's
+        bottom mirror takes the line below the deleted block. Deleting through
+        the last row keeps the table's bottom edge on the new last row, and
+        deleting from the first row keeps the top edge on the new first row.
+        Columns follow the same rules with right and left.
         """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
+        self.load_borders_for_edit(table_id)
+        data = self._table_data[table_id]
+        before, after = ("bottom", "top") if axis == "row" else ("right", "left")
+        size = len(data) if axis == "row" else len(data[0])
+        end = min(start + n, size)
+        if start == 0 and end == size:
             return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            for i in range(len(layer_ids) - 1, -1, -1):
-                layer = self.objects[layer_ids[i].identifier]
-                if start_row <= layer.row_column_index < start_row + n_rows:
-                    del layer_ids[i]
-                elif layer.row_column_index >= start_row + n_rows:
-                    layer.row_column_index -= n_rows
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_delete(layer_ids, start_row, n_rows)
 
-    def shift_stroke_columns_on_delete(self, table_id: int, start_col: int, n_cols: int) -> None:
-        """
-        The column-axis mirror of shift_stroke_rows_on_delete -- see
-        that method's own docstring for the full reasoning.
-        """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
-            return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            for i in range(len(layer_ids) - 1, -1, -1):
-                layer = self.objects[layer_ids[i].identifier]
-                if start_col <= layer.row_column_index < start_col + n_cols:
-                    del layer_ids[i]
-                elif layer.row_column_index >= start_col + n_cols:
-                    layer.row_column_index -= n_cols
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_delete(layer_ids, start_col, n_cols)
+        def at(index: int, i: int) -> tuple:
+            return (index, i) if axis == "row" else (i, index)
 
-    def shift_stroke_columns(self, table_id: int, start_col: int, n_cols: int) -> None:
-        """
-        The column-axis mirror of shift_stroke_rows -- see that
-        method's own docstring for the full reasoning. Shifts every
-        stroke layer's own row_column_index at or after start_col by
-        n_cols, on both the left-column and right-column stroke layers.
-        Also adjusts top-row/bottom-row stroke layers' own stroke_runs,
-        whose origin/length represent a COLUMN range even though those
-        layers' own row_column_index is a row.
-        """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
-            return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            for layer_id in layer_ids:
-                layer = self.objects[layer_id.identifier]
-                if layer.row_column_index >= start_col:
-                    layer.row_column_index += n_cols
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_insert(layer_ids, start_col, n_cols)
+        for i in range(len(data[0]) if axis == "row" else len(data)):
+            if end == size:
+                # The new last row takes the old bottom edge
+                edge = self._border_cell(table_id, before, *at(size - 1, i))
+                target = self._border_cell(table_id, before, *at(start - 1, i))
+                if target is not None:
+                    setattr(target, before, getattr(edge, before) if edge is not None else None)
+            elif start == 0:
+                # The new first row takes the old top edge
+                edge = self._border_cell(table_id, after, *at(0, i))
+                target = self._border_cell(table_id, after, *at(end, i))
+                if target is not None:
+                    setattr(target, after, getattr(edge, after) if edge is not None else None)
+            else:
+                lower = self._border_cell(table_id, after, *at(end, i))
+                line = getattr(lower, after) if lower is not None else None
+                if line is None:
+                    last_deleted = self._border_cell(table_id, before, *at(end - 1, i))
+                    line = getattr(last_deleted, before) if last_deleted is not None else None
+                upper = self._border_cell(table_id, before, *at(start - 1, i))
+                if upper is not None:
+                    setattr(upper, before, line)
+                if lower is not None:
+                    setattr(lower, after, line)
 
     def propagate_borders_into_inserted_rows(
         self,
@@ -3779,6 +3657,9 @@ class _NumbersModel(Cacheable):
         table_obj = self.objects[table_id]
         if table_obj.stroke_sidecar.identifier != 0:
             sidecar_obj = self.objects[table_obj.stroke_sidecar.identifier]
+            # add_stroke() also sets these, but a table may have no strokes left
+            sidecar_obj.row_count = num_rows
+            sidecar_obj.column_count = num_cols
             clear_field_container(sidecar_obj.top_row_stroke_layers)
             clear_field_container(sidecar_obj.bottom_row_stroke_layers)
             clear_field_container(sidecar_obj.left_column_stroke_layers)
