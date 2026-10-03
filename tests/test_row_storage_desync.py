@@ -4,9 +4,8 @@ this library ever writes it -- dropping the stored buffer for an
 entirely-blank row, and even an entirely-blank tile, as a space
 optimisation -- without correspondingly updating ``rowHeaders.buckets``,
 a separate bookkeeping structure ``model.py`` used to rely on to work
-out "which flattened storage position is row N". See
-``row_storage_desync_bug_report.md`` for the full, confirmed mechanism
-and how it was found (a live round trip of a genuine 1000-row table).
+out "which flattened storage position is row N". Commit f002f4d records
+how it was found (a live round trip of a genuine 1000-row table).
 
 These tests reproduce the desync directly against this library's own
 archive objects -- no live Numbers.app round trip needed -- by writing
@@ -43,9 +42,7 @@ def _sparsify_tile_in_place(model, table_id, tile_index, rows_to_keep):
     tile_ref = bds.tiles.tiles[tile_index]
     tile_base_row = tile_ref.tileid * tile_size
     tile = model.objects[tile_ref.tile.identifier]
-    kept = [
-        r for r in tile.rowInfos if (tile_base_row + r.tile_row_index) in rows_to_keep
-    ]
+    kept = [r for r in tile.rowInfos if (tile_base_row + r.tile_row_index) in rows_to_keep]
     del tile.rowInfos[:]
     tile.rowInfos.extend(kept)
 

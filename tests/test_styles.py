@@ -12,9 +12,17 @@ from numbers_parser import (
     Style,
     UnsupportedWarning,
     VerticalJustification,
+    register_font,
 )
 from numbers_parser.cell import DEFAULT_ALIGNMENT_CLASS
-from numbers_parser.constants import DEFAULT_FONT, DEFAULT_FONT_SIZE, DOCUMENT_ID
+from numbers_parser.constants import (
+    DEFAULT_FONT,
+    DEFAULT_FONT_SIZE,
+    DOCUMENT_ID,
+    FONT_FAMILY_DEFAULT,
+    FONT_MAP,
+    FONT_TUPLE_MAP,
+)
 from numbers_parser.iwafile import find_extension
 
 TEST_NUMBERED_REF = [
@@ -489,12 +497,13 @@ def test_unstyled_cell_inherits_table_default_inset(configurable_save_file):
     body_style.cell_properties.padding.bottom = 7.0
     body_style.cell_properties.text_wrap = False
 
-    table.write(0, 0, "never explicitly styled")
-    assert table.cell(0, 0)._cell_style_id is None
+    # (1, 1) is a body cell; row 0 and column 0 are headers
+    table.write(1, 1, "never explicitly styled")
+    assert table.cell(1, 1)._cell_style_id is None
     doc.save(configurable_save_file)
 
     saved_doc = Document(configurable_save_file)
-    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(1, 1)
     assert saved_cell._cell_style_id is None
     assert saved_cell.style.text_inset == 7.0
     assert saved_cell.style.text_wrap is False
@@ -508,14 +517,15 @@ def test_unstyled_cell_inherits_table_default_vertical_alignment(configurable_sa
     body_style = doc._model.objects[table_model.body_cell_style.identifier]
     body_style.cell_properties.vertical_alignment = 1  # kMiddle, not kTop
 
-    table.write(0, 0, "never explicitly styled")
-    assert table.cell(0, 0)._cell_style_id is None
+    # (1, 1) is a body cell; row 0 and column 0 are headers
+    table.write(1, 1, "never explicitly styled")
+    assert table.cell(1, 1)._cell_style_id is None
     doc.save(configurable_save_file)
 
     saved_doc = Document(configurable_save_file)
-    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(1, 1)
     assert saved_cell._cell_style_id is None
-    assert saved_cell.style.alignment.vertical != "top"
+    assert saved_cell.style.alignment.vertical == VerticalJustification.MIDDLE
 
 
 def test_unstyled_cell_inherits_table_default_bg_color(configurable_save_file):
@@ -531,14 +541,15 @@ def test_unstyled_cell_inherits_table_default_bg_color(configurable_save_file):
     body_style.cell_properties.cell_fill.color.a = 1.0
     body_style.cell_properties.cell_fill.color.rgbspace = "srgb"
 
-    table.write(0, 0, "never explicitly styled")
-    assert table.cell(0, 0)._cell_style_id is None
+    # (1, 1) is a body cell; row 0 and column 0 are headers
+    table.write(1, 1, "never explicitly styled")
+    assert table.cell(1, 1)._cell_style_id is None
     doc.save(configurable_save_file)
 
     saved_doc = Document(configurable_save_file)
-    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(1, 1)
     assert saved_cell._cell_style_id is None
-    assert saved_cell.style.bg_color is not None
+    assert saved_cell.style.bg_color == RGB(51, 102, 153)
 
 
 def test_style_mutation_after_reopen_persists(configurable_save_file):
@@ -607,3 +618,162 @@ def test_parentless_theme_presets_save_without_crashing(configurable_save_file):
     styles = reopened._model.available_paragraph_styles()
     assert len(styles) == len(presets)
     assert all(style.font_name == DEFAULT_FONT for style in styles.values())
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_register_font_prefers_the_regular_face_as_family_default():
+    register_font("Roboto-Bold", family="Roboto", style="Bold", bold=True)
+    register_font("Roboto-Light", family="Roboto", style="Light")
+    assert Style(font_name="Roboto")._font_details["name"] == "Roboto-Bold"
+    register_font("Roboto-Regular", family="Roboto")
+    assert Style(font_name="Roboto")._font_details["name"] == "Roboto-Regular"
+    register_font("Roboto-Italic", family="Roboto", style="Italic", italic=True)
+    assert Style(font_name="Roboto")._font_details["name"] == "Roboto-Regular"
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_register_font_rejects_built_in_fonts():
+    builtin = FONT_FAMILY_DEFAULT[DEFAULT_FONT]
+    with pytest.raises(ValueError, match="built-in font"):
+        register_font(builtin["name"], family="Something Else")
+    with pytest.raises(ValueError, match="built-in font"):
+        register_font("Not-A-Real-Font", family=builtin["family"], style=builtin["style"])
+    assert FONT_MAP[builtin["name"]] == builtin
+    # Registering the same custom font again is allowed
+    register_font("fjcstudioLight")
+    register_font("fjcstudioLight")
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_register_font_argument_types():
+    with pytest.raises(TypeError, match="non-empty string"):
+        register_font("")
+    with pytest.raises(TypeError, match="must be strings"):
+        register_font("Roboto-Regular", family=1)
+    with pytest.raises(TypeError, match="bold argument must be boolean"):
+        register_font("Roboto-Bold", bold="yes")
+
+
+def test_unstyled_header_cells_report_header_styles(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    model = doc._model
+    table_model = model.objects[table._table_id]
+
+    def fill(field):
+        style = model.objects[getattr(table_model, field).identifier]
+        color = style.cell_properties.cell_fill.color
+        return RGB(round(color.r * 255), round(color.g * 255), round(color.b * 255))
+
+    header_row_fill = fill("header_row_style")
+    header_column_fill = fill("header_column_style")
+    assert header_row_fill != header_column_fill
+    assert table.cell(0, 1).style.bg_color == header_row_fill
+    assert table.cell(1, 0).style.bg_color == header_column_fill
+    assert table.cell(1, 1).style.bg_color is None
+
+    # Editing a never-styled header cell keeps the header fill on save
+    table.cell(0, 1).style.bold = True
+    doc.save(configurable_save_file)
+    saved = Document(configurable_save_file).sheets[0].tables[0]
+    assert saved.cell(0, 1).style.bold
+    assert saved.cell(0, 1).style.bg_color == header_row_fill
+
+
+def _stored_font_name(table, row, col):
+    model = table._model
+    return model.char_property(model.cell_text_style(table.cell(row, col)), "font_name")
+
+
+def test_editing_one_cell_of_a_shared_style_changes_only_that_cell(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    shared = doc.add_style(name="Shared", font_size=11.0)
+    for row in range(1, 4):
+        table.write(row, 1, f"v{row}", style=shared)
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(2, 1).style.font_size = 30.0
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    assert [table.cell(row, 1).style.font_size for row in range(1, 4)] == [11.0, 30.0, 11.0]
+    assert doc.styles["Shared"].font_size == 11.0
+    assert table.cell(2, 1).style.name == "Shared"
+    # The edited cell's style is an unnamed variation of the named style, as Numbers stores it
+    model = doc._model
+    edited = model.cell_text_style(table.cell(2, 1))
+    assert edited.super.name == ""
+    assert edited.super.is_variation
+    assert model.objects[edited.super.parent.identifier].super.name == "Shared"
+
+
+def test_editing_an_unshared_cell_style_reuses_it(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(1, 1).style.font_size = 20.0
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    assert table.cell(1, 1).style.font_size == 20.0
+    assert table.cell(2, 2).style.font_size != 20.0
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_editing_a_reopened_style_keeps_its_font_face(configurable_save_file):
+    register_font("Roboto-Regular", family="Roboto")
+    register_font("Roboto-Light", family="Roboto", style="Light")
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(1, 1, "light", style=doc.add_style(name="Light", font_name=("Roboto", "Light")))
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(1, 1).style.font_size = 20.0
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(1, 1).style.font_size == 20.0
+    assert _stored_font_name(table, 1, 1) == "Roboto-Light"
+
+
+def test_editing_a_reopened_style_keeps_an_unknown_font(configurable_save_file, restore_font_maps):
+    register_font("Roboto-Regular", family="Roboto")
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(1, 1, "roboto", style=doc.add_style(name="Roboto", font_name="Roboto"))
+    doc.save(configurable_save_file)
+
+    # Forget the font, as in a process that never registered it
+    del FONT_MAP["Roboto-Regular"]
+    del FONT_FAMILY_DEFAULT["Roboto"]
+    del FONT_TUPLE_MAP["Roboto", "Regular"]
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    with pytest.warns(UnsupportedWarning, match="Roboto-Regular"):
+        style = table.cell(1, 1).style
+    assert style.font_name == DEFAULT_FONT
+    table.cell(1, 1).style.font_size = 20.0
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert _stored_font_name(table, 1, 1) == "Roboto-Regular"
+
+
+def test_setting_font_name_on_a_reopened_style_changes_the_font(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(1, 1, "text")
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(1, 1).style.font_name = "Arial"
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(1, 1).style.font_name == "Arial"
+    assert _stored_font_name(table, 1, 1) == FONT_FAMILY_DEFAULT["Arial"]["name"]

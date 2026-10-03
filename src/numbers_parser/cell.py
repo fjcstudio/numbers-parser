@@ -269,10 +269,12 @@ class Style:
         ``True`` if text wrapping is enabled
     baseline_shift: float, optional, default: None
         Baseline shift in points (positive raises the text). ``None`` leaves the
-        value unset when a style is created, so it inherits from its parent.
+        value unset when a style is created. Reading an unset value returns the
+        direct parent's value, or 0.0.
     line_spacing: float, optional, default: None
         Relative line spacing as a multiple of the line height (1.0 is single
         spacing). ``None`` leaves the value unset when a style is created.
+        Reading follows the parent chain and returns ``None`` if nothing sets it.
 
     Raises
     ------
@@ -366,6 +368,9 @@ class Style:
             _text_style_obj_id=model.text_style_object_id(cell),
             _cell_style_obj_id=model.cell_style_object_id(cell),
         )
+        # __post_init__ derives _font_details from the family name, which picks
+        # the family's default face; keep the face actually stored instead.
+        style.__dict__["_font_details"] = model.cell_font_details(cell)
         # Constructing a Style always marks it as modified (see __setattr__
         # below) even though this one merely reflects existing storage.
         style.__dict__["_update_text_style"] = False
@@ -384,13 +389,7 @@ class Style:
             msg = "font name must be a string or name/style tuple"
             raise TypeError(msg)
 
-        if isinstance(self.font_name, str) and self.font_name in FONT_FAMILY_DEFAULT:
-            self._font_details = FONT_FAMILY_DEFAULT[self.font_name]
-        elif isinstance(self.font_name, tuple) and self.font_name in FONT_TUPLE_MAP:
-            self._font_details = FONT_TUPLE_MAP[self.font_name]
-        else:
-            msg = f"font '{self.font_name}' does not exist"
-            raise IndexError(msg)
+        self._font_details = _font_details_for(self.font_name)
 
         for attr in ["bold", "italic", "underline", "strikethrough"]:
             if not isinstance(getattr(self, attr), bool):
@@ -413,6 +412,19 @@ class Style:
 
         if name not in ["_update_text_style", "_update_cell_style"]:
             self.__dict__[name] = value
+        if name == "font_name" and "_font_details" in self.__dict__:
+            # A new font name replaces the face, including one read from a file
+            self.__dict__["_font_details"] = _font_details_for(value)
+
+
+def _font_details_for(font_name: str | tuple) -> dict:
+    """Return the font map entry for a family name or (family, style) tuple."""
+    if isinstance(font_name, str) and font_name in FONT_FAMILY_DEFAULT:
+        return FONT_FAMILY_DEFAULT[font_name]
+    if isinstance(font_name, tuple) and font_name in FONT_TUPLE_MAP:
+        return FONT_TUPLE_MAP[font_name]
+    msg = f"font '{font_name}' does not exist"
+    raise IndexError(msg)
 
 
 def rgb_color(color) -> RGB:

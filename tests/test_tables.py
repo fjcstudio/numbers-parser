@@ -183,7 +183,8 @@ def test_table_titles(configurable_save_file):
 
 
 def test_table_name_height():
-    """table_name_height (read-only) returns exactly what's stored in
+    """
+    table_name_height (read-only) returns exactly what's stored in
     the table's own TableModelArchive, confirmed directly against the
     raw protobuf field -- 0.0 for a freshly created table regardless of
     table_name_enabled (confirmed directly this library cannot compute
@@ -197,7 +198,8 @@ def test_table_name_height():
     programmatically rather than genuinely opened and saved by real
     Numbers.app at least once, which is what actually populates this
     field) -- this test confirms the property reads correctly either
-    way, not that a specific fixture has a specific non-zero value."""
+    way, not that a specific fixture has a specific non-zero value.
+    """
     doc = Document("tests/data/test-titles.numbers")
     for table in doc.sheets[0].tables:
         raw_value = doc._model.objects[table._table_id].table_name_height

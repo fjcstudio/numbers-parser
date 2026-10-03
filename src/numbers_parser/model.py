@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from array import array
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from hashlib import sha1
 from itertools import chain
@@ -88,6 +88,10 @@ from numbers_parser.xrefs import CellRange, ScopedNameRefCache
 
 logger = logging.getLogger(__name__)
 debug = logger.debug
+
+# UTF-16 code unit of U+FFFC, the placeholder an attached object such as a
+# page number field occupies in a text storage.
+_PLACEHOLDER_UNIT = "\ufffc".encode("utf-16-le")
 
 
 class MergeCells:
@@ -331,7 +335,8 @@ class _NumbersModel(Cacheable):
         ]
 
     def add_ruler_guide(self, sheet_id: int, axis: str, position: float) -> None:
-        """Add a ruler guide ("horizontal" or "vertical") at position, in points.
+        """
+        Add a ruler guide ("horizontal" or "vertical") at position, in points.
 
         The sheet's GuideStorageArchive is created on the first guide.
         """
@@ -378,6 +383,9 @@ class _NumbersModel(Cacheable):
         if digest in self._images:
             image_id = self._images[digest]
         else:
+            # Store the file first: it raises if the name is taken, and must
+            # do so before the DataInfo and digest are recorded.
+            self.store_image(data, filename)
             image_id = self.next_image_identifier()
             self.objects[PACKAGE_ID].datas.append(
                 TSPArchiveMessages.DataInfo(
@@ -389,7 +397,6 @@ class _NumbersModel(Cacheable):
                 ),
             )
             self._images[digest] = image_id
-            self.store_image(data, filename)
 
         image_info_id, image_info = self.objects.create_object_from_dict(
             "Document",
@@ -404,27 +411,46 @@ class _NumbersModel(Cacheable):
         return image_info_id
 
     def duplicate_image(self, sheet_id: int, image_id: int, x: float, y: float) -> int:
-        """Copy an image to (x, y) and return the copy's object ID.
-
-        The copy shares the source's package file and sits directly behind the
-        source. Its title and caption are new objects, since each image must
-        own them.
         """
+        Copy an image to (x, y) and return the copy's object ID.
+
+        The copy shares the source's package file and style, and sits directly
+        behind the source. Its title, caption and mask are new objects, since
+        each image must own them: a title or caption also gets its own text
+        storage and placement, and each owned copy's parent is the new image.
+        """
+        drawables = self.objects[sheet_id].drawable_infos
+        position = next((i for i, ref in enumerate(drawables) if ref.identifier == image_id), None)
+        if position is None:
+            msg = f"no image with id {image_id} on this sheet"
+            raise IndexError(msg)
+
         source = self.objects[image_id]
         copy_id, copy = self.objects.create_object_from_dict("Document", {}, type(source))
         copy.CopyFrom(source)
         for field in ("title", "caption"):
             if copy.super.HasField(field):
-                old = self.objects[getattr(copy.super, field).identifier]
-                new_id, new = self.objects.create_object_from_dict("Document", {}, type(old))
-                new.CopyFrom(old)
-                getattr(copy.super, field).identifier = new_id
+                info_ref = getattr(copy.super, field)
+                info_ref.identifier, info = self._copy_object(info_ref.identifier)
+                _set_drawable_parent(info, copy_id)
+                for path in (("super", "owned_storage"), ("placement",)):
+                    ref = _set_message_field(info, path)
+                    if ref is not None:
+                        ref.identifier, _ = self._copy_object(ref.identifier)
+        if copy.HasField("mask"):
+            copy.mask.identifier, mask = self._copy_object(copy.mask.identifier)
+            _set_drawable_parent(mask, copy_id)
         copy.super.geometry.position.x = x
         copy.super.geometry.position.y = y
-        drawables = self.objects[sheet_id].drawable_infos
-        position = next(i for i, ref in enumerate(drawables) if ref.identifier == image_id)
         drawables.insert(position, TSPMessages.Reference(identifier=copy_id))
         return copy_id
+
+    def _copy_object(self, object_id: int) -> tuple[int, object]:
+        """Copy an object into the Document archive and return (new id, new object)."""
+        source = self.objects[object_id]
+        new_id, new = self.objects.create_object_from_dict("Document", {}, type(source))
+        new.CopyFrom(source)
+        return new_id, new
 
     def _header_footer_storage(self, sheet_id: int, kind: str, zone: int):
         refs = getattr(self.objects[sheet_id], kind)
@@ -447,19 +473,33 @@ class _NumbersModel(Cacheable):
         ]
 
     def set_header_footer_text(
-        self, sheet_id: int, kind: str, zone: int, text: str, runs: list = None
+        self,
+        sheet_id: int,
+        kind: str,
+        zone: int,
+        text: str,
+        runs: list | None = None,
     ) -> None:
-        """Replace the text of a page header or footer zone.
+        r"""
+        Replace the text of a page header or footer zone.
 
         Style runs are kept for the part of the text they still cover and
         dropped past the end of the new text, so a shorter text leaves no
         run pointing beyond it. Text after the last kept run takes that run's style.
         If ``runs`` is given, it replaces the character style runs: a list of
         (character_index, object_id or None) as returned by
-        :meth:`header_footer_char_runs`.
+        :meth:`header_footer_char_runs`, with indices increasing and inside
+        the new text. ``runs`` is checked before anything changes.
+
+        An attached object such as a page number field is kept only where the
+        new text still has its U+FFFC placeholder at the same index, so
+        ``"\ufffc of 3"`` keeps a field at index 0 and ``"Draft"`` drops it.
         """
         storage = self._header_footer_storage(sheet_id, kind, zone)
-        length = len(text.encode("utf-16-le")) // 2
+        units = text.encode("utf-16-le")
+        length = len(units) // 2
+        if runs is not None:
+            _check_char_runs(runs, length)
         del storage.text[:]
         storage.text.append(text)
         for name in (
@@ -477,19 +517,26 @@ class _NumbersModel(Cacheable):
                 kept = [type(e).FromString(e.SerializeToString()) for e in keep]
                 del entries[:]
                 entries.extend(kept)
+        for name in ("table_attachment", "table_footnote"):
+            entries = getattr(storage, name).entries
+            keep = [
+                e
+                for e in entries
+                if e.character_index < length
+                and units[2 * e.character_index : 2 * e.character_index + 2] == _PLACEHOLDER_UNIT
+            ]
+            if len(keep) != len(entries):
+                kept = [type(e).FromString(e.SerializeToString()) for e in keep]
+                del entries[:]
+                entries.extend(kept)
         if runs is not None:
             entries = storage.table_char_style.entries
-            template = entries[0] if len(entries) else None
             del entries[:]
             for index, object_id in runs:
-                entry = type(template)() if template is not None else None
-                if entry is None:
-                    msg = "zone has no character style runs to extend"
-                    raise ValueError(msg)
+                entry = entries.add()
                 entry.character_index = index
                 if object_id is not None:
                     entry.object.identifier = object_id
-                entries.append(entry)
 
     def image_ids(self, sheet_id: int) -> list[int]:
         """Return the object IDs of the free-standing images on a sheet, back to front."""
@@ -514,7 +561,8 @@ class _NumbersModel(Cacheable):
         return data, info.preferred_file_name or info.file_name
 
     def remove_image(self, sheet_id: int, image_id: int) -> None:
-        """Remove an image from a sheet.
+        """
+        Remove an image from a sheet.
 
         The package file and its DataInfo stay, since another image can share
         them through SHA1 deduplication.
@@ -1066,6 +1114,8 @@ class _NumbersModel(Cacheable):
         # Each Table Model has a UUID which is used in references to the table. See
         # Numbers.md#uuid-mapping for more details.
 
+        self._calculate_extra_owner_uuids()
+
         # For haunted owner archive types, map formula_owner_uids to their base_owner_uids
         haunted_owner_ids = [
             obj_id
@@ -1096,7 +1146,8 @@ class _NumbersModel(Cacheable):
             uuid_to_hex(self.objects[obj_id].base_owner_uid): obj_id for obj_id in haunted_owner_ids
         }
 
-        # In addition to the haunted-owner base UUID above, some cross-table
+    def _calculate_extra_owner_uuids(self) -> None:
+        # In addition to the haunted-owner base UUID, some cross-table
         # references (observed empirically against real Numbers.app output)
         # are keyed by a *different*, auxiliary TABLE_MODEL owner's own
         # formula_owner_uid rather than the haunted-owner base UUID. This
@@ -1280,7 +1331,7 @@ class _NumbersModel(Cacheable):
                 for sheet_id in self.sheet_ids()
                 for table_id in self.table_ids(sheet_id)
                 if table_uuid == self.table_base_id(table_id)
-                or table_uuid in getattr(self, "_table_id_to_extra_owner_uuids", {}).get(table_id, set())
+                or table_uuid in self._table_id_to_extra_owner_uuids.get(table_id, set())
             ),
             None,
         )
@@ -1411,8 +1462,8 @@ class _NumbersModel(Cacheable):
         own count to work out "which flattened position is row N" then
         silently misattributes every row from that point on to the wrong
         stored content -- confirmed directly against a real Numbers.app
-        round trip of a large, sparse table; see
-        ``row_storage_desync_bug_report.md`` for the full mechanism.
+        round trip of a large, sparse table (commit f002f4d);
+        ``tests/test_row_storage_desync.py`` reproduces the fault.
         Deriving the row from the rowInfo itself sidesteps the desync
         entirely, since a rowInfo's own tile position can't go stale the
         way a second, separate structure can.
@@ -2218,9 +2269,8 @@ class _NumbersModel(Cacheable):
         # information it requires missing, it silently retires ("adopts")
         # the untrusted owner and rebuilds the table's identity -- and every
         # reference into the table that named it under the old identity --
-        # from scratch, under a value it derives itself. See derive_table_identity_uuid() and
-        # Claude chat handoff notes/session_2026-08-28_artifacts/
-        # fresh_eyes_findings_2026-08-28.md (round 4) for the round-trip proof.
+        # from scratch, under a value it derives itself. See derive_table_identity_uuid(),
+        # commit 7158166 and tests/test_table_identity_adoption.py.
         # The aux owner family below (HAUNTED_OWNER) is deliberately left
         # untouched: Numbers keeps it regardless of its UUID value.
         table_model_owner_uuid = derive_table_identity_uuid(table_id_uuid)
@@ -2339,9 +2389,8 @@ class _NumbersModel(Cacheable):
         This is one of the three sites (alongside FormulaOwnerDependenciesArchive
         .formula_owner_uid and its owner_id_map entry) that Numbers.app checks
         when deciding whether to keep or "adopt" a table's formula owner -- see
-        derive_table_identity_uuid() and
-        Claude chat handoff notes/session_2026-08-28_artifacts/
-        fresh_eyes_findings_2026-08-28.md. Some older documents (see issue-18)
+        derive_table_identity_uuid(), commit 7158166 and
+        tests/test_table_identity_adoption.py. Some older documents (see issue-18)
         do not carry a HeaderNameMgrArchive at all; in that case there is
         nothing to register and this is a no-op, matching how the rest of the
         model tolerates that document shape.
@@ -2423,7 +2472,9 @@ class _NumbersModel(Cacheable):
             )
             for k, v in presets_map.items()
         }
-        for style in styles.values():
+        for key, style in styles.items():
+            # Keep the stored face rather than the family default (see from_storage)
+            style.__dict__["_font_details"] = self.cell_font_details(presets_map[key]["obj"])
             # Override __setattr__ behavior for builtin styles
             style.__dict__["_update_text_style"] = False
             style.__dict__["_update_cell_style"] = False
@@ -2571,17 +2622,92 @@ class _NumbersModel(Cacheable):
             self.update_paragraph_style(style)
 
         if data is not None:
+            # Registered styles (theme presets and add_style()) were handled
+            # above; this loop is for styles read from cells.
+            processed.update(id(x) for x in self.styles.values())
+            registered = {x._text_style_obj_id for x in self.styles.values()}
+            uses = None
             for cells in data:
                 for cell in cells:
                     style = cell._style
-                    if (
-                        style is not None
-                        and style._text_style_obj_id is not None
-                        and style._update_text_style
-                        and id(style) not in processed
-                    ):
-                        self.update_paragraph_style(style)
-                        processed.add(id(style))
+                    if style is None or not style._update_text_style or id(style) in processed:
+                        continue
+                    if style._text_style_obj_id is None:
+                        # A never-styled cell: give it a variation of its
+                        # position's default text style.
+                        style._text_style_obj_id = self._add_paragraph_style_variation(
+                            self.default_text_style_id(cell),
+                        )
+                    else:
+                        if uses is None:
+                            uses = self._text_style_uses()
+                        if (
+                            style._text_style_obj_id in registered
+                            or uses[style._text_style_obj_id] > 1
+                        ):
+                            # Shared with other cells or a named style: edit a
+                            # variation of it so only this cell changes.
+                            uses[style._text_style_obj_id] -= 1
+                            style._text_style_obj_id = self._add_paragraph_style_variation(
+                                style._text_style_obj_id,
+                            )
+                            uses[style._text_style_obj_id] = 1
+                    self.update_paragraph_style(style)
+                    processed.add(id(style))
+
+    def _text_style_uses(self) -> Counter:
+        """Count the cells in every table that use each paragraph style object."""
+        uses = Counter()
+        for table_data in self._table_data.values():
+            for cells in table_data:
+                for cell in cells:
+                    if cell._style is not None and cell._style._text_style_obj_id is not None:
+                        uses[cell._style._text_style_obj_id] += 1
+                    elif cell._text_style_id is not None:
+                        uses[self.text_style_object_id(cell)] += 1
+        return uses
+
+    def _add_paragraph_style_variation(self, base_id: int) -> int:
+        """
+        Copy a paragraph style as an unnamed variation of it, the way Numbers
+        stores a cell-level override, and return the new style's id.
+
+        A named style becomes the variation's parent. A copy of an unnamed
+        style keeps that style's own parent. The new style is listed in the
+        stylesheet's styles and under its parent in parent_to_children_style_map.
+        """
+        base = self.objects[base_id]
+        style_id, style = self.objects.create_object_from_dict(
+            "DocumentStylesheet",
+            {},
+            TSWPArchives.ParagraphStyleArchive,
+        )
+        style.CopyFrom(base)
+        if base.super.name:
+            style.super.ClearField("name")
+            style.super.ClearField("style_identifier")
+            style.super.parent.identifier = base_id
+            style.super.is_variation = True
+            style.override_count = 1
+        stylesheet_id = self.objects[DOCUMENT_ID].stylesheet.identifier
+        stylesheet = self.objects[stylesheet_id]
+        style.super.stylesheet.identifier = stylesheet_id
+        stylesheet.styles.append(TSPMessages.Reference(identifier=style_id))
+        if style.super.HasField("parent"):
+            parent_id = style.super.parent.identifier
+            entry = next(
+                (
+                    e
+                    for e in stylesheet.parent_to_children_style_map
+                    if e.parent.identifier == parent_id
+                ),
+                None,
+            )
+            if entry is None:
+                entry = stylesheet.parent_to_children_style_map.add()
+                entry.parent.identifier = parent_id
+            entry.children.append(TSPMessages.Reference(identifier=style_id))
+        return style_id
 
     def update_cell_styles(self, table_id: int, data: list) -> None:
         """
@@ -2858,36 +2984,50 @@ class _NumbersModel(Cacheable):
         """
         if cell._text_style_id is not None:
             return self.table_style(cell._table_id, cell._text_style_id)
+        return self.objects[self.default_text_style_id(cell)]
 
+    def default_text_style_id(self, cell: Cell) -> int:
+        """Return the id of the table's default text style for a cell's position."""
         table_model = self.objects[cell._table_id]
+        field = "body_text_style"
         if cell.row in range(table_model.number_of_header_rows):
-            return self.objects[table_model.header_row_text_style.identifier]
-        if cell.col in range(table_model.number_of_header_columns):
-            return self.objects[table_model.header_column_text_style.identifier]
-        if table_model.number_of_footer_rows > 0:
+            field = "header_row_text_style"
+        elif cell.col in range(table_model.number_of_header_columns):
+            field = "header_column_text_style"
+        elif table_model.number_of_footer_rows > 0:
             start_row_num = table_model.number_of_rows - table_model.number_of_footer_rows
-            end_row_num = start_row_num + table_model.number_of_footer_rows
-            if cell.row in range(start_row_num, end_row_num):
-                return self.objects[table_model.footer_row_text_style.identifier]
-        return self.objects[table_model.body_text_style.identifier]
+            if cell.row in range(start_row_num, table_model.number_of_rows):
+                field = "footer_row_text_style"
+        return getattr(table_model, field).identifier
 
-    def body_cell_style(self, table_id: int) -> object | None:
+    def default_cell_style(self, cell: Cell) -> object | None:
         """
-        Return a table's own default body cell style, or None if it has
-        none. Used as the fallback for a cell with no explicit per-cell
-        style, in place of this library's own generic constants.
+        Return the table's own default cell style for a cell's position, or
+        None if the table has none: the header row, header column or footer
+        row style, else the body style, chosen the same way as
+        :meth:`cell_text_style`. Used as the fallback for a cell with no
+        explicit per-cell style, in place of this library's generic constants.
         """
-        table_model = self.objects[table_id]
-        if not table_model.HasField("body_cell_style"):
+        table_model = self.objects[cell._table_id]
+        field = "body_cell_style"
+        if cell.row in range(table_model.number_of_header_rows):
+            field = "header_row_style"
+        elif cell.col in range(table_model.number_of_header_columns):
+            field = "header_column_style"
+        elif table_model.number_of_footer_rows > 0:
+            start_row_num = table_model.number_of_rows - table_model.number_of_footer_rows
+            if cell.row in range(start_row_num, table_model.number_of_rows):
+                field = "footer_row_style"
+        if not table_model.HasField(field):
             return None
-        return self.objects[table_model.body_cell_style.identifier]
+        return self.objects[getattr(table_model, field).identifier]
 
     def cell_alignment(self, cell: Cell) -> Alignment:
         style = self.cell_text_style(cell)
         horizontal = HorizontalJustification(self.para_property(style, "alignment"))
 
         if cell._cell_style_id is None:
-            body_style = self.body_cell_style(cell._table_id)
+            body_style = self.default_cell_style(cell)
             if body_style is not None:
                 vertical = VerticalJustification(
                     self.cell_property(body_style, "vertical_alignment"),
@@ -2901,7 +3041,7 @@ class _NumbersModel(Cacheable):
 
     def cell_bg_color(self, cell: Cell) -> tuple | list[tuple]:
         if cell._cell_style_id is None:
-            style = self.body_cell_style(cell._table_id)
+            style = self.default_cell_style(cell)
             if style is None:
                 return None
         else:
@@ -2968,6 +3108,9 @@ class _NumbersModel(Cacheable):
 
     def cell_style_name(self, obj: Cell | object) -> bool:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
+        if not style.super.name and style.super.is_variation and style.super.HasField("parent"):
+            # A cell-level override reports the name of the style it varies
+            return self.objects[style.super.parent.identifier].super.name
         return style.super.name
 
     def cell_font_color(self, obj: Cell | object) -> tuple:
@@ -2999,8 +3142,14 @@ class _NumbersModel(Cacheable):
     def cell_font_details(self, obj: Cell | object) -> dict[str, str]:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
         font_name = self.char_property(style, "font_name")
-        if font_name not in FONT_MAP:
+        if not font_name:
             return FONT_FAMILY_DEFAULT[DEFAULT_FONT]
+        if font_name not in FONT_MAP:
+            # Keep the stored PostScript name so saving an edited style does not
+            # replace a font this library does not know with the default font.
+            details = dict(FONT_FAMILY_DEFAULT[DEFAULT_FONT])
+            details["name"] = font_name
+            return details
         return FONT_MAP[font_name]
 
     def cell_first_indent(self, obj: Cell | object) -> float:
@@ -3043,7 +3192,7 @@ class _NumbersModel(Cacheable):
 
     def cell_text_inset(self, cell: Cell) -> float:
         if cell._cell_style_id is None:
-            body_style = self.body_cell_style(cell._table_id)
+            body_style = self.default_cell_style(cell)
             if body_style is not None:
                 return self.cell_property(body_style, "padding").left
             return DEFAULT_TEXT_INSET
@@ -3054,7 +3203,7 @@ class _NumbersModel(Cacheable):
 
     def cell_text_wrap(self, cell: Cell) -> float:
         if cell._cell_style_id is None:
-            body_style = self.body_cell_style(cell._table_id)
+            body_style = self.default_cell_style(cell)
             if body_style is not None:
                 return self.cell_property(body_style, "text_wrap")
             return DEFAULT_TEXT_WRAP
@@ -3213,221 +3362,99 @@ class _NumbersModel(Cacheable):
         ):
             self.set_cell_border(table_id, row, col, side, border_value)
 
-    def _shift_stroke_runs_on_insert(self, layer_ids, insert_at: int, n: int) -> None:
+    def load_borders_for_edit(self, table_id: int) -> None:
         """
-        Shared by shift_stroke_rows/shift_stroke_columns for the
-        CROSS-axis layers -- e.g. called by shift_stroke_rows on
-        left_column_stroke_layers/right_column_stroke_layers, whose own
-        stroke_runs (origin/length) represent a ROW range, the axis
-        being inserted into, even though the enclosing layer's own
-        row_column_index represents the (unaffected) column.
+        Load every cell's border from the stroke sidecar and mark the table so
+        save rebuilds the sidecar from the cells' borders.
 
-        Same "shift the whole thing, or grow it, or leave it alone"
-        principle already used for SUM formula ranges
-        (insert_rows_with_formula_repair): a run entirely at or after
-        insert_at shifts by n; a run insert_at falls WITHIN grows by n
-        (its own origin stays put, only its length changes); a run
-        entirely before insert_at is unaffected.
+        Called before rows or columns are inserted or deleted: once borders are
+        held on the cells, they move with the cells, and the rebuilt sidecar
+        takes the table's new size.
+        """
+        self.extract_strokes(table_id)
+        self._update_strokes[table_id] = True
 
-        Confirmed directly this was missing: shift_stroke_rows/
-        shift_stroke_columns originally only adjusted row_column_index
-        on the SAME-axis layers (top/bottom for rows, left/right for
-        columns) -- correct there, since row_column_index directly IS
-        the row/column for those. But a vertical border's own row range
-        (or a horizontal border's own column range) lives in the
-        CROSS-axis layers' stroke_runs instead, which nothing was
-        adjusting at all: a multi-row vertical border's run kept its
-        original origin/length completely unchanged after a row was
-        inserted within its own span, silently misaligning it with the
-        content that had actually shifted.
-        """
-        for layer_id in layer_ids:
-            layer = self.objects[layer_id.identifier]
-            for run in layer.stroke_runs:
-                if insert_at <= run.origin:
-                    run.origin += n
-                elif run.origin < insert_at <= run.origin + run.length:
-                    run.length += n
-                # else: insert_at > run.origin + run.length -- unaffected
+    def _border_cell(self, table_id: int, side: str, row: int, col: int):
+        cell = self.cell_for_stroke(table_id, side, row, col)
+        return cell._border if cell is not None else None
 
-    def _shift_stroke_runs_on_delete(self, layer_ids, start: int, n: int) -> None:
+    def prepare_borders_for_insert(self, table_id: int, axis: str, start: int) -> None:
         """
-        The delete-side mirror of _shift_stroke_runs_on_insert -- see
-        that method's own docstring for which layers this applies to
-        and why. Handles a deleted range overlapping a run's own origin/
-        length in any of the ways that's possible: entirely before it
-        (shift back), entirely within it (shrink), overlapping only the
-        run's own start or end (clip to whatever survives), or entirely
-        containing the run (remove it -- nothing of it survives).
-        """
-        deleted_end = start + n
-        for layer_id in layer_ids:
-            layer = self.objects[layer_id.identifier]
-            for i in range(len(layer.stroke_runs) - 1, -1, -1):
-                run = layer.stroke_runs[i]
-                run_start = run.origin
-                run_end = run.origin + run.length
-                if deleted_end <= run_start:
-                    # Deleted range entirely before this run -- shift back.
-                    run.origin -= n
-                elif start >= run_end:
-                    # Deleted range entirely after this run -- unaffected.
-                    continue
-                elif start <= run_start and deleted_end >= run_end:
-                    # Deleted range entirely contains this run -- remove it.
-                    del layer.stroke_runs[i]
-                else:
-                    # Partial overlap -- clip origin/length to whatever
-                    # of the run's own span survives outside the deleted
-                    # range, then account for the rows/columns removed
-                    # before whatever's left.
-                    surviving_before = max(0, start - run_start)
-                    surviving_after = max(0, run_end - deleted_end)
-                    run.length = surviving_before + surviving_after
-                    if start <= run_start:
-                        run.origin = start
-                    # else run.origin (before the deleted range) is unchanged
+        Before rows or columns are inserted at ``start``, keep the line on the
+        boundary there with the row or column that moves.
 
-    def shift_stroke_rows(self, table_id: int, start_row: int, n_rows: int) -> None:
+        A line between two rows is held on the lower row's top and mirrored on
+        the upper row's bottom (likewise right and left for columns). The new
+        rows go between the two, so the upper row's mirror is cleared and the
+        line stays on the moving row's top only; otherwise the save would draw
+        it on both sides of the new rows.
         """
-        Shift every stroke layer's own row_column_index at or after
-        start_row by n_rows, on both the top-row and bottom-row stroke
-        layers -- the row-axis counterpart to what add_row() already
-        does for cell data (reassigning each Cell object's own .row).
-        Also adjusts left-column/right-column stroke layers' own
-        stroke_runs, whose origin/length represent a ROW range even
-        though those layers' own row_column_index is a column -- see
-        _shift_stroke_runs_on_insert's own docstring for why this
-        second part is needed too, confirmed as a separate, genuine
-        gap from the row_column_index one.
-
-        Confirmed directly this was previously missing entirely:
-        add_row() shifts cell values/styles correctly by moving Cell
-        objects and reassigning their own .row/.col, but the stroke
-        sidecar is a completely separate structure (keyed by its own
-        row_column_index, independent of any Cell object) that add_row()
-        never touched at all. The practical effect: a row's border stays
-        behind at its OLD physical row index after add_row() shifts its
-        content to a new one -- confirmed with a real, multi-row table
-        and a genuine save/reopen/insert/save cycle, not just an
-        in-memory check (the in-memory state can look deceptively
-        correct immediately after add_row(), before this asymmetry
-        between cell data and stroke data actually surfaces).
-        """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
+        self.load_borders_for_edit(table_id)
+        data = self._table_data[table_id]
+        before, after = ("bottom", "top") if axis == "row" else ("right", "left")
+        size = len(data) if axis == "row" else len(data[0])
+        if not 0 < start < size:
             return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            for layer_id in layer_ids:
-                layer = self.objects[layer_id.identifier]
-                if layer.row_column_index >= start_row:
-                    layer.row_column_index += n_rows
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_insert(layer_ids, start_row, n_rows)
+        for i in range(len(data[0]) if axis == "row" else len(data)):
+            upper = (start - 1, i) if axis == "row" else (i, start - 1)
+            lower = (start, i) if axis == "row" else (i, start)
+            upper_border = self._border_cell(table_id, before, *upper)
+            lower_border = self._border_cell(table_id, after, *lower)
+            if upper_border is None:
+                continue
+            line = getattr(lower_border, after, None) if lower_border is not None else None
+            if line is None:
+                line = getattr(upper_border, before)
+            setattr(upper_border, before, None)
+            if lower_border is not None:
+                setattr(lower_border, after, line)
 
-    def shift_stroke_rows_on_delete(self, table_id: int, start_row: int, n_rows: int) -> None:
+    def prepare_borders_for_delete(self, table_id: int, axis: str, start: int, n: int) -> None:
         """
-        The delete-side mirror of shift_stroke_rows -- see that
-        method's own docstring for the full reasoning; delete_row() has
-        the identical gap add_row() had, just in the opposite
-        direction: it correctly moves the remaining Cell objects'
-        own .row/.col up to close the gap, but never touched the stroke
-        sidecar, so a border at or after the deleted rows stayed behind
-        at its OLD row index rather than following its content up to
-        the new one. Confirmed directly, symmetrically to the insert
-        case.
+        Before rows or columns ``start`` to ``start + n - 1`` are deleted, set
+        the borders of the rows or columns that become neighbours.
 
-        A stroke layer whose own row_column_index falls WITHIN the
-        deleted range is removed outright -- the row it was on no
-        longer exists at all, so there's nothing left for it to
-        describe. A stroke layer after the deleted range has its
-        row_column_index decremented by n_rows, the same way add_row()
-        (via shift_stroke_rows) already increments one after an
-        insertion.
+        Deleting from the middle joins the rows either side, so the upper row's
+        bottom mirror takes the line below the deleted block. Deleting through
+        the last row keeps the table's bottom edge on the new last row, and
+        deleting from the first row keeps the top edge on the new first row.
+        Columns follow the same rules with right and left.
         """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
+        self.load_borders_for_edit(table_id)
+        data = self._table_data[table_id]
+        before, after = ("bottom", "top") if axis == "row" else ("right", "left")
+        size = len(data) if axis == "row" else len(data[0])
+        end = min(start + n, size)
+        if start == 0 and end == size:
             return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            for i in range(len(layer_ids) - 1, -1, -1):
-                layer = self.objects[layer_ids[i].identifier]
-                if start_row <= layer.row_column_index < start_row + n_rows:
-                    del layer_ids[i]
-                elif layer.row_column_index >= start_row + n_rows:
-                    layer.row_column_index -= n_rows
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_delete(layer_ids, start_row, n_rows)
 
-    def shift_stroke_columns_on_delete(self, table_id: int, start_col: int, n_cols: int) -> None:
-        """
-        The column-axis mirror of shift_stroke_rows_on_delete -- see
-        that method's own docstring for the full reasoning.
-        """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
-            return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            for i in range(len(layer_ids) - 1, -1, -1):
-                layer = self.objects[layer_ids[i].identifier]
-                if start_col <= layer.row_column_index < start_col + n_cols:
-                    del layer_ids[i]
-                elif layer.row_column_index >= start_col + n_cols:
-                    layer.row_column_index -= n_cols
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_delete(layer_ids, start_col, n_cols)
+        def at(index: int, i: int) -> tuple:
+            return (index, i) if axis == "row" else (i, index)
 
-    def shift_stroke_columns(self, table_id: int, start_col: int, n_cols: int) -> None:
-        """
-        The column-axis mirror of shift_stroke_rows -- see that
-        method's own docstring for the full reasoning. Shifts every
-        stroke layer's own row_column_index at or after start_col by
-        n_cols, on both the left-column and right-column stroke layers.
-        Also adjusts top-row/bottom-row stroke layers' own stroke_runs,
-        whose origin/length represent a COLUMN range even though those
-        layers' own row_column_index is a row.
-        """
-        table_obj = self.objects[table_id]
-        stroke_sidecar_id = table_obj.stroke_sidecar.identifier
-        if stroke_sidecar_id == 0:
-            return
-        sidecar_obj = self.objects[stroke_sidecar_id]
-        for layer_ids in (
-            sidecar_obj.left_column_stroke_layers,
-            sidecar_obj.right_column_stroke_layers,
-        ):
-            for layer_id in layer_ids:
-                layer = self.objects[layer_id.identifier]
-                if layer.row_column_index >= start_col:
-                    layer.row_column_index += n_cols
-        for layer_ids in (
-            sidecar_obj.top_row_stroke_layers,
-            sidecar_obj.bottom_row_stroke_layers,
-        ):
-            self._shift_stroke_runs_on_insert(layer_ids, start_col, n_cols)
+        for i in range(len(data[0]) if axis == "row" else len(data)):
+            if end == size:
+                # The new last row takes the old bottom edge
+                edge = self._border_cell(table_id, before, *at(size - 1, i))
+                target = self._border_cell(table_id, before, *at(start - 1, i))
+                if target is not None:
+                    setattr(target, before, getattr(edge, before) if edge is not None else None)
+            elif start == 0:
+                # The new first row takes the old top edge
+                edge = self._border_cell(table_id, after, *at(0, i))
+                target = self._border_cell(table_id, after, *at(end, i))
+                if target is not None:
+                    setattr(target, after, getattr(edge, after) if edge is not None else None)
+            else:
+                lower = self._border_cell(table_id, after, *at(end, i))
+                line = getattr(lower, after) if lower is not None else None
+                if line is None:
+                    last_deleted = self._border_cell(table_id, before, *at(end - 1, i))
+                    line = getattr(last_deleted, before) if last_deleted is not None else None
+                upper = self._border_cell(table_id, before, *at(start - 1, i))
+                if upper is not None:
+                    setattr(upper, before, line)
+                if lower is not None:
+                    setattr(lower, after, line)
 
     def propagate_borders_into_inserted_rows(
         self,
@@ -3628,6 +3655,9 @@ class _NumbersModel(Cacheable):
         table_obj = self.objects[table_id]
         if table_obj.stroke_sidecar.identifier != 0:
             sidecar_obj = self.objects[table_obj.stroke_sidecar.identifier]
+            # add_stroke() also sets these, but a table may have no strokes left
+            sidecar_obj.row_count = num_rows
+            sidecar_obj.column_count = num_cols
             clear_field_container(sidecar_obj.top_row_stroke_layers)
             clear_field_container(sidecar_obj.bottom_row_stroke_layers)
             clear_field_container(sidecar_obj.left_column_stroke_layers)
@@ -3959,3 +3989,43 @@ def field_references(obj: object) -> dict:
         for x in obj.ListFields()
         if isinstance(getattr(obj, x[0].name), TSPMessages.Reference)
     }
+
+
+def _set_message_field(message: object, path: tuple):
+    """Return the sub-message at an attribute path if every step is a set field, else None."""
+    for name in path:
+        if name not in message.DESCRIPTOR.fields_by_name or not message.HasField(name):
+            return None
+        message = getattr(message, name)
+    return message
+
+
+def _set_drawable_parent(message: object, parent_id: int) -> None:
+    """Point a drawable's parent reference, nested at any depth of ``super``, at parent_id."""
+    while "parent" not in message.DESCRIPTOR.fields_by_name:
+        if "super" not in message.DESCRIPTOR.fields_by_name:
+            return
+        message = message.super
+    message.parent.identifier = parent_id
+
+
+def _check_char_runs(runs: list, length: int) -> None:
+    """Raise ValueError unless runs are (index, object id or None) pairs with increasing indices in the text."""
+    last = -1
+    for run in runs:
+        if not isinstance(run, (tuple, list)) or len(run) != 2:
+            msg = f"character style run {run!r} must be (character_index, object_id or None)"
+            raise ValueError(msg)
+        index, object_id = run
+        if not isinstance(index, int) or isinstance(index, bool) or index <= last:
+            msg = f"character style run index {index!r} must be an integer above {last}"
+            raise ValueError(msg)
+        if index >= max(length, 1):
+            msg = f"character style run index {index} is past the end of the text ({length})"
+            raise ValueError(msg)
+        if object_id is not None and (
+            not isinstance(object_id, int) or isinstance(object_id, bool)
+        ):
+            msg = f"character style run object {object_id!r} must be an object id or None"
+            raise ValueError(msg)
+        last = index

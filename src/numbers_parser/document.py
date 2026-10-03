@@ -121,7 +121,9 @@ class Document:
     @paper_size.setter
     def paper_size(self, name: str) -> None:
         if name not in PAPER_SIZES:
-            msg = f"unknown paper size '{name}'; use one of {sorted(PAPER_SIZES)} or set_paper_size()"
+            msg = (
+                f"unknown paper size '{name}'; use one of {sorted(PAPER_SIZES)} or set_paper_size()"
+            )
             raise ValueError(msg)
         self._model.set_paper_size(*PAPER_SIZES[name])
 
@@ -143,6 +145,7 @@ class Document:
             Portrait paper width in points
         height: float
             Portrait paper height in points
+
         """
         self._model.set_paper_size(paper_id, float(width), float(height))
 
@@ -491,6 +494,7 @@ class Sheet:
             ``"horizontal"`` or ``"vertical"``.
         position: float
             Distance from the sheet's own top/left edge, in points.
+
         """
         self._model.add_ruler_guide(self._sheet_id, axis, position)
 
@@ -518,8 +522,9 @@ class Sheet:
         """List[tuple]: Character style runs of a header zone, as (index, style id or None)."""
         return self._model.header_footer_char_runs(self._sheet_id, "headers", zone)
 
-    def set_header_text(self, text: str, zone: int = 0, runs: list = None) -> None:
-        """Set the text of a page header zone, keeping its existing style.
+    def set_header_text(self, text: str, zone: int = 0, runs: list | None = None) -> None:
+        """
+        Set the text of a page header zone, keeping its existing style.
 
         ``runs`` optionally replaces the character style runs (see :meth:`header_char_runs`).
         """
@@ -533,8 +538,9 @@ class Sheet:
         """List[tuple]: Character style runs of a footer zone, as (index, style id or None)."""
         return self._model.header_footer_char_runs(self._sheet_id, "footers", zone)
 
-    def set_footer_text(self, text: str, zone: int = 0, runs: list = None) -> None:
-        """Set the text of a page footer zone, keeping its existing style.
+    def set_footer_text(self, text: str, zone: int = 0, runs: list | None = None) -> None:
+        """
+        Set the text of a page footer zone, keeping its existing style.
 
         ``runs`` optionally replaces the character style runs (see :meth:`footer_char_runs`).
         """
@@ -553,7 +559,7 @@ class Sheet:
         y: float = 0.0,
         width: float = 200.0,
         height: float = 200.0,
-    ) -> "Image":
+    ) -> Image:
         """
         Add a free-standing image to the sheet and return it.
 
@@ -567,11 +573,17 @@ class Sheet:
             Position of the top-left corner from the sheet's top-left, in points.
         width, height: float, optional
             Size in points.
+
         """
         image_id = self._model.add_image(self._sheet_id, data, filename, x, y, width, height)
         return Image(self._model, image_id)
 
-    def duplicate_image(self, image: "Image", x: float = None, y: float = None) -> "Image":
+    def duplicate_image(
+        self,
+        image: Image,
+        x: float | None = None,
+        y: float | None = None,
+    ) -> Image:
         """
         Copy an image, optionally moving the copy, and return it.
 
@@ -586,7 +598,7 @@ class Sheet:
         )
         return Image(self._model, new_id)
 
-    def remove_image(self, image: "Image") -> None:
+    def remove_image(self, image: Image) -> None:
         """Remove an image from the sheet. Its file stays in the package."""
         self._model.remove_image(self._sheet_id, image._image_id)
 
@@ -1397,13 +1409,9 @@ class Table(Cacheable):
 
         self._model.shift_row_sizes(self._table_id, start_row, num_rows)
 
-        # Populate every cell's own _border from the sidecar BEFORE
-        # anything shifts -- propagate_borders_into_inserted_rows below
-        # needs the true, current per-cell border state to compare
-        # against, and the sidecar's own row_column_index/stroke_run
-        # coordinates are only valid against the CURRENT (pre-insertion)
-        # data layout, not the post-insertion one.
-        self._model.extract_strokes(self._table_id)
+        # Load every cell's border before the rows move: borders then move
+        # with their cells, and save rebuilds the stroke sidecar from them.
+        self._model.prepare_borders_for_insert(self._table_id, "row", start_row)
 
         self.num_rows += num_rows
         self._model.number_of_rows(self._table_id, self.num_rows)
@@ -1418,9 +1426,11 @@ class Table(Cacheable):
             )
         self._data[start_row:start_row] = rows
 
-        self._model.shift_stroke_rows(self._table_id, start_row, num_rows)
         self._model.propagate_borders_into_inserted_rows(
-            self._table_id, self._data, start_row, num_rows,
+            self._table_id,
+            self._data,
+            start_row,
+            num_rows,
         )
 
         for row in range(start_row, self.num_rows):
@@ -1484,12 +1494,10 @@ class Table(Cacheable):
         self._model.shift_col_sizes(self._table_id, start_col, num_cols)
 
         # See the identical comment in add_row() above.
-        self._model.extract_strokes(self._table_id)
+        self._model.prepare_borders_for_insert(self._table_id, "column", start_col)
 
         self.num_cols += num_cols
         self._model.number_of_columns(self._table_id, self.num_cols)
-
-        self._model.shift_stroke_columns(self._table_id, start_col, num_cols)
 
         for row in range(self.num_rows):
             cols = [
@@ -1506,7 +1514,10 @@ class Table(Cacheable):
                     self.write(row, col, default)
 
         self._model.propagate_borders_into_inserted_columns(
-            self._table_id, self._data, start_col, num_cols,
+            self._table_id,
+            self._data,
+            start_col,
+            num_cols,
         )
 
     def delete_row(
@@ -1542,14 +1553,18 @@ class Table(Cacheable):
             msg = "Row number not in range for table"
             raise IndexError(msg)
 
+        effective_start_row = start_row if start_row is not None else self.num_rows - num_rows
+        self._model.prepare_borders_for_delete(
+            self._table_id,
+            "row",
+            effective_start_row,
+            num_rows,
+        )
         if start_row is not None:
-            effective_start_row = start_row
             del self._data[start_row : start_row + num_rows]
         else:
-            effective_start_row = self.num_rows - num_rows
             del self._data[-num_rows:]
 
-        self._model.shift_stroke_rows_on_delete(self._table_id, effective_start_row, num_rows)
         self._model.shift_row_sizes(self._table_id, effective_start_row, -num_rows)
 
         self.num_rows -= num_rows
@@ -1597,6 +1612,12 @@ class Table(Cacheable):
             raise IndexError(msg)
 
         effective_start_col = start_col if start_col is not None else self.num_cols - num_cols
+        self._model.prepare_borders_for_delete(
+            self._table_id,
+            "column",
+            effective_start_col,
+            num_cols,
+        )
 
         for row in range(self.num_rows):
             if start_col is not None:
@@ -1606,7 +1627,6 @@ class Table(Cacheable):
             for col in range(len(self._data[row])):
                 self._data[row][col].col = col
 
-        self._model.shift_stroke_columns_on_delete(self._table_id, effective_start_col, num_cols)
         self._model.shift_col_sizes(self._table_id, effective_start_col, -num_cols)
 
         self.num_cols -= num_cols

@@ -4,9 +4,7 @@ Regression tests for the "adoption" fix: Numbers.app silently retires
 holds one specific derived value. Finding the identity information it
 requires missing, it rebuilds the table's identity -- and every
 reference into the table that named it under the old identity -- from
-scratch. See
-`Claude chat handoff notes/session_2026-08-28_artifacts/
-fresh_eyes_findings_2026-08-28.md` for the round-trip experiments this fix
+scratch. Commit 7158166 records the round-trip experiments this fix
 implements.
 
 The fix touches exactly three sites for a newly minted table's kind-1
@@ -109,7 +107,7 @@ def test_add_table_mints_derived_kind1_identity_at_all_three_sites():
 
 def test_kind1_identity_is_the_real_byte_reversal_of_table_id_not_a_coincidence():
     """
-    The crux of the round-4 correction (fresh_eyes_findings_2026-08-28.md):
+    The crux of the fix in commit 7158166:
     V must be derived from this table's own TableModelArchive.table_id
     string, not from some other, independently minted uuid1 that happens
     to land on the right value. Checks the write sites against table_id

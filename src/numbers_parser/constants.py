@@ -478,6 +478,14 @@ def update_font_maps(font_map: dict) -> dict:
 update_font_maps(GENERATED_FONT_MAP)
 
 
+_BUILTIN_FONT_NAMES = frozenset(GENERATED_FONT_MAP)
+_BUILTIN_FONT_STYLES = frozenset(FONT_TUPLE_MAP)
+
+
+def _is_regular_face(details: dict) -> bool:
+    return details["style"] == "Regular" and not details["bold"] and not details["italic"]
+
+
 def register_font(
     name: str,
     family: str | None = None,
@@ -485,18 +493,52 @@ def register_font(
     bold: bool = False,
     italic: bool = False,
 ) -> None:
-    """Make a font that is not shipped with Numbers usable in a :class:`Style`.
+    """
+    Make a font that is not in the built-in font map usable in a :class:`Style`.
 
     ``name`` is the PostScript name stored in the document, for example
     ``"Roboto-Regular"``. ``family`` is the name passed as ``Style.font_name``
     and defaults to ``name``. Fonts that are not registered continue to be
     rejected by ``Style`` so that typos are still reported.
+
+    ``Style(font_name=family)`` uses the family's regular face (style
+    ``"Regular"``, not bold or italic) once one is registered, and the first
+    face registered until then. Registering the same font again is allowed.
+    Registration applies to the whole Python process.
+
+    Raises
+    ------
+    TypeError:
+        If ``name`` is not a non-empty string, ``family`` or ``style`` are not
+        strings, or ``bold`` or ``italic`` are not booleans.
+    ValueError:
+        If ``name``, or the ``(family, style)`` pair, is already a built-in font.
+
     """
     if not isinstance(name, str) or not name:
         msg = "font name must be a non-empty string"
         raise TypeError(msg)
     family = family or name
+    if not isinstance(family, str) or not isinstance(style, str):
+        msg = "font family and style must be strings"
+        raise TypeError(msg)
+    for attr, value in (("bold", bold), ("italic", italic)):
+        if not isinstance(value, bool):
+            msg = f"{attr} argument must be boolean"
+            raise TypeError(msg)
+    if name in _BUILTIN_FONT_NAMES:
+        msg = f"font '{name}' is a built-in font and cannot be registered"
+        raise ValueError(msg)
+    if (family, style) in _BUILTIN_FONT_STYLES:
+        msg = f"font '{family}' style '{style}' is a built-in font and cannot be registered"
+        raise ValueError(msg)
     details = {"name": name, "family": family, "style": style, "bold": bold, "italic": italic}
     FONT_MAP[name] = details
     FONT_TUPLE_MAP[(family, style)] = details
-    FONT_FAMILY_DEFAULT.setdefault(family, details)
+    current = FONT_FAMILY_DEFAULT.get(family)
+    if (
+        current is None
+        or current["name"] == name
+        or (_is_regular_face(details) and not _is_regular_face(current))
+    ):
+        FONT_FAMILY_DEFAULT[family] = details

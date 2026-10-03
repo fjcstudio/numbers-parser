@@ -9,10 +9,12 @@ def test_sheet_with_no_guides_returns_empty_list():
 
 
 def test_add_ruler_guide_creates_storage_and_persists(configurable_save_file):
-    """A sheet with no guides at all has no userDefinedGuideStorage
+    """
+    A sheet with no guides at all has no userDefinedGuideStorage
     reference to begin with -- confirms add_ruler_guide() correctly
     creates one the first time, and that it survives a genuine
-    save/reopen (not just an in-memory check)."""
+    save/reopen (not just an in-memory check).
+    """
     doc = Document()
     sheet = doc.sheets[0]
     sheet.add_ruler_guide("horizontal", 100.0)
@@ -27,10 +29,12 @@ def test_add_ruler_guide_creates_storage_and_persists(configurable_save_file):
 
 
 def test_add_ruler_guide_appends_to_existing_storage(configurable_save_file):
-    """A sheet that already has at least one guide (and therefore
+    """
+    A sheet that already has at least one guide (and therefore
     already has its own userDefinedGuideStorage) should have a new
     guide appended to it, not have the existing ones replaced or
-    disturbed."""
+    disturbed.
+    """
     doc = Document()
     sheet = doc.sheets[0]
     sheet.add_ruler_guide("horizontal", 100.0)
