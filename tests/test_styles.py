@@ -21,6 +21,7 @@ from numbers_parser.constants import (
     DOCUMENT_ID,
     FONT_FAMILY_DEFAULT,
     FONT_MAP,
+    FONT_TUPLE_MAP,
 )
 from numbers_parser.iwafile import find_extension
 
@@ -677,3 +678,102 @@ def test_unstyled_header_cells_report_header_styles(configurable_save_file):
     saved = Document(configurable_save_file).sheets[0].tables[0]
     assert saved.cell(0, 1).style.bold
     assert saved.cell(0, 1).style.bg_color == header_row_fill
+
+
+def _stored_font_name(table, row, col):
+    model = table._model
+    return model.char_property(model.cell_text_style(table.cell(row, col)), "font_name")
+
+
+def test_editing_one_cell_of_a_shared_style_changes_only_that_cell(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    shared = doc.add_style(name="Shared", font_size=11.0)
+    for row in range(1, 4):
+        table.write(row, 1, f"v{row}", style=shared)
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(2, 1).style.font_size = 30.0
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    assert [table.cell(row, 1).style.font_size for row in range(1, 4)] == [11.0, 30.0, 11.0]
+    assert doc.styles["Shared"].font_size == 11.0
+    assert table.cell(2, 1).style.name == "Shared"
+    # The edited cell's style is an unnamed variation of the named style, as Numbers stores it
+    model = doc._model
+    edited = model.cell_text_style(table.cell(2, 1))
+    assert edited.super.name == ""
+    assert edited.super.is_variation
+    assert model.objects[edited.super.parent.identifier].super.name == "Shared"
+
+
+def test_editing_an_unshared_cell_style_reuses_it(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(1, 1).style.font_size = 20.0
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    assert table.cell(1, 1).style.font_size == 20.0
+    assert table.cell(2, 2).style.font_size != 20.0
+
+
+@pytest.mark.usefixtures("restore_font_maps")
+def test_editing_a_reopened_style_keeps_its_font_face(configurable_save_file):
+    register_font("Roboto-Regular", family="Roboto")
+    register_font("Roboto-Light", family="Roboto", style="Light")
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(1, 1, "light", style=doc.add_style(name="Light", font_name=("Roboto", "Light")))
+    doc.save(configurable_save_file)
+
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(1, 1).style.font_size = 20.0
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(1, 1).style.font_size == 20.0
+    assert _stored_font_name(table, 1, 1) == "Roboto-Light"
+
+
+def test_editing_a_reopened_style_keeps_an_unknown_font(configurable_save_file, restore_font_maps):
+    register_font("Roboto-Regular", family="Roboto")
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(1, 1, "roboto", style=doc.add_style(name="Roboto", font_name="Roboto"))
+    doc.save(configurable_save_file)
+
+    # Forget the font, as in a process that never registered it
+    del FONT_MAP["Roboto-Regular"]
+    del FONT_FAMILY_DEFAULT["Roboto"]
+    del FONT_TUPLE_MAP["Roboto", "Regular"]
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    with pytest.warns(UnsupportedWarning, match="Roboto-Regular"):
+        style = table.cell(1, 1).style
+    assert style.font_name == DEFAULT_FONT
+    table.cell(1, 1).style.font_size = 20.0
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert _stored_font_name(table, 1, 1) == "Roboto-Regular"
+
+
+def test_setting_font_name_on_a_reopened_style_changes_the_font(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(1, 1, "text")
+    doc.save(configurable_save_file)
+    doc = Document(configurable_save_file)
+    table = doc.sheets[0].tables[0]
+    table.cell(1, 1).style.font_name = "Arial"
+    doc.save(configurable_save_file)
+    table = Document(configurable_save_file).sheets[0].tables[0]
+    assert table.cell(1, 1).style.font_name == "Arial"
+    assert _stored_font_name(table, 1, 1) == FONT_FAMILY_DEFAULT["Arial"]["name"]

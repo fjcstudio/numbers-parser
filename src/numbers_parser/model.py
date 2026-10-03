@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from array import array
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from hashlib import sha1
 from itertools import chain
@@ -2474,7 +2474,9 @@ class _NumbersModel(Cacheable):
             )
             for k, v in presets_map.items()
         }
-        for style in styles.values():
+        for key, style in styles.items():
+            # Keep the stored face rather than the family default (see from_storage)
+            style.__dict__["_font_details"] = self.cell_font_details(presets_map[key]["obj"])
             # Override __setattr__ behavior for builtin styles
             style.__dict__["_update_text_style"] = False
             style.__dict__["_update_cell_style"] = False
@@ -2622,17 +2624,92 @@ class _NumbersModel(Cacheable):
             self.update_paragraph_style(style)
 
         if data is not None:
+            # Registered styles (theme presets and add_style()) were handled
+            # above; this loop is for styles read from cells.
+            processed.update(id(x) for x in self.styles.values())
+            registered = {x._text_style_obj_id for x in self.styles.values()}
+            uses = None
             for cells in data:
                 for cell in cells:
                     style = cell._style
-                    if (
-                        style is not None
-                        and style._text_style_obj_id is not None
-                        and style._update_text_style
-                        and id(style) not in processed
-                    ):
-                        self.update_paragraph_style(style)
-                        processed.add(id(style))
+                    if style is None or not style._update_text_style or id(style) in processed:
+                        continue
+                    if style._text_style_obj_id is None:
+                        # A never-styled cell: give it a variation of its
+                        # position's default text style.
+                        style._text_style_obj_id = self._add_paragraph_style_variation(
+                            self.default_text_style_id(cell),
+                        )
+                    else:
+                        if uses is None:
+                            uses = self._text_style_uses()
+                        if (
+                            style._text_style_obj_id in registered
+                            or uses[style._text_style_obj_id] > 1
+                        ):
+                            # Shared with other cells or a named style: edit a
+                            # variation of it so only this cell changes.
+                            uses[style._text_style_obj_id] -= 1
+                            style._text_style_obj_id = self._add_paragraph_style_variation(
+                                style._text_style_obj_id,
+                            )
+                            uses[style._text_style_obj_id] = 1
+                    self.update_paragraph_style(style)
+                    processed.add(id(style))
+
+    def _text_style_uses(self) -> Counter:
+        """Count the cells in every table that use each paragraph style object."""
+        uses = Counter()
+        for table_data in self._table_data.values():
+            for cells in table_data:
+                for cell in cells:
+                    if cell._style is not None and cell._style._text_style_obj_id is not None:
+                        uses[cell._style._text_style_obj_id] += 1
+                    elif cell._text_style_id is not None:
+                        uses[self.text_style_object_id(cell)] += 1
+        return uses
+
+    def _add_paragraph_style_variation(self, base_id: int) -> int:
+        """
+        Copy a paragraph style as an unnamed variation of it, the way Numbers
+        stores a cell-level override, and return the new style's id.
+
+        A named style becomes the variation's parent. A copy of an unnamed
+        style keeps that style's own parent. The new style is listed in the
+        stylesheet's styles and under its parent in parent_to_children_style_map.
+        """
+        base = self.objects[base_id]
+        style_id, style = self.objects.create_object_from_dict(
+            "DocumentStylesheet",
+            {},
+            TSWPArchives.ParagraphStyleArchive,
+        )
+        style.CopyFrom(base)
+        if base.super.name:
+            style.super.ClearField("name")
+            style.super.ClearField("style_identifier")
+            style.super.parent.identifier = base_id
+            style.super.is_variation = True
+            style.override_count = 1
+        stylesheet_id = self.objects[DOCUMENT_ID].stylesheet.identifier
+        stylesheet = self.objects[stylesheet_id]
+        style.super.stylesheet.identifier = stylesheet_id
+        stylesheet.styles.append(TSPMessages.Reference(identifier=style_id))
+        if style.super.HasField("parent"):
+            parent_id = style.super.parent.identifier
+            entry = next(
+                (
+                    e
+                    for e in stylesheet.parent_to_children_style_map
+                    if e.parent.identifier == parent_id
+                ),
+                None,
+            )
+            if entry is None:
+                entry = stylesheet.parent_to_children_style_map.add()
+                entry.parent.identifier = parent_id
+            entry.children.append(TSPMessages.Reference(identifier=style_id))
+        return style_id
 
     def update_cell_styles(self, table_id: int, data: list) -> None:
         """
@@ -2909,18 +2986,21 @@ class _NumbersModel(Cacheable):
         """
         if cell._text_style_id is not None:
             return self.table_style(cell._table_id, cell._text_style_id)
+        return self.objects[self.default_text_style_id(cell)]
 
+    def default_text_style_id(self, cell: Cell) -> int:
+        """Return the id of the table's default text style for a cell's position."""
         table_model = self.objects[cell._table_id]
+        field = "body_text_style"
         if cell.row in range(table_model.number_of_header_rows):
-            return self.objects[table_model.header_row_text_style.identifier]
-        if cell.col in range(table_model.number_of_header_columns):
-            return self.objects[table_model.header_column_text_style.identifier]
-        if table_model.number_of_footer_rows > 0:
+            field = "header_row_text_style"
+        elif cell.col in range(table_model.number_of_header_columns):
+            field = "header_column_text_style"
+        elif table_model.number_of_footer_rows > 0:
             start_row_num = table_model.number_of_rows - table_model.number_of_footer_rows
-            end_row_num = start_row_num + table_model.number_of_footer_rows
-            if cell.row in range(start_row_num, end_row_num):
-                return self.objects[table_model.footer_row_text_style.identifier]
-        return self.objects[table_model.body_text_style.identifier]
+            if cell.row in range(start_row_num, table_model.number_of_rows):
+                field = "footer_row_text_style"
+        return getattr(table_model, field).identifier
 
     def default_cell_style(self, cell: Cell) -> object | None:
         """
@@ -3030,6 +3110,9 @@ class _NumbersModel(Cacheable):
 
     def cell_style_name(self, obj: Cell | object) -> bool:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
+        if not style.super.name and style.super.is_variation and style.super.HasField("parent"):
+            # A cell-level override reports the name of the style it varies
+            return self.objects[style.super.parent.identifier].super.name
         return style.super.name
 
     def cell_font_color(self, obj: Cell | object) -> tuple:
@@ -3061,8 +3144,14 @@ class _NumbersModel(Cacheable):
     def cell_font_details(self, obj: Cell | object) -> dict[str, str]:
         style = self.cell_text_style(obj) if isinstance(obj, Cell) else obj
         font_name = self.char_property(style, "font_name")
-        if font_name not in FONT_MAP:
+        if not font_name:
             return FONT_FAMILY_DEFAULT[DEFAULT_FONT]
+        if font_name not in FONT_MAP:
+            # Keep the stored PostScript name so saving an edited style does not
+            # replace a font this library does not know with the default font.
+            details = dict(FONT_FAMILY_DEFAULT[DEFAULT_FONT])
+            details["name"] = font_name
+            return details
         return FONT_MAP[font_name]
 
     def cell_first_indent(self, obj: Cell | object) -> float:
