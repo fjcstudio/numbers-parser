@@ -2922,23 +2922,34 @@ class _NumbersModel(Cacheable):
                 return self.objects[table_model.footer_row_text_style.identifier]
         return self.objects[table_model.body_text_style.identifier]
 
-    def body_cell_style(self, table_id: int) -> object | None:
+    def default_cell_style(self, cell: Cell) -> object | None:
         """
-        Return a table's own default body cell style, or None if it has
-        none. Used as the fallback for a cell with no explicit per-cell
-        style, in place of this library's own generic constants.
+        Return the table's own default cell style for a cell's position, or
+        None if the table has none: the header row, header column or footer
+        row style, else the body style, chosen the same way as
+        :meth:`cell_text_style`. Used as the fallback for a cell with no
+        explicit per-cell style, in place of this library's generic constants.
         """
-        table_model = self.objects[table_id]
-        if not table_model.HasField("body_cell_style"):
+        table_model = self.objects[cell._table_id]
+        field = "body_cell_style"
+        if cell.row in range(table_model.number_of_header_rows):
+            field = "header_row_style"
+        elif cell.col in range(table_model.number_of_header_columns):
+            field = "header_column_style"
+        elif table_model.number_of_footer_rows > 0:
+            start_row_num = table_model.number_of_rows - table_model.number_of_footer_rows
+            if cell.row in range(start_row_num, table_model.number_of_rows):
+                field = "footer_row_style"
+        if not table_model.HasField(field):
             return None
-        return self.objects[table_model.body_cell_style.identifier]
+        return self.objects[getattr(table_model, field).identifier]
 
     def cell_alignment(self, cell: Cell) -> Alignment:
         style = self.cell_text_style(cell)
         horizontal = HorizontalJustification(self.para_property(style, "alignment"))
 
         if cell._cell_style_id is None:
-            body_style = self.body_cell_style(cell._table_id)
+            body_style = self.default_cell_style(cell)
             if body_style is not None:
                 vertical = VerticalJustification(
                     self.cell_property(body_style, "vertical_alignment"),
@@ -2952,7 +2963,7 @@ class _NumbersModel(Cacheable):
 
     def cell_bg_color(self, cell: Cell) -> tuple | list[tuple]:
         if cell._cell_style_id is None:
-            style = self.body_cell_style(cell._table_id)
+            style = self.default_cell_style(cell)
             if style is None:
                 return None
         else:
@@ -3094,7 +3105,7 @@ class _NumbersModel(Cacheable):
 
     def cell_text_inset(self, cell: Cell) -> float:
         if cell._cell_style_id is None:
-            body_style = self.body_cell_style(cell._table_id)
+            body_style = self.default_cell_style(cell)
             if body_style is not None:
                 return self.cell_property(body_style, "padding").left
             return DEFAULT_TEXT_INSET
@@ -3105,7 +3116,7 @@ class _NumbersModel(Cacheable):
 
     def cell_text_wrap(self, cell: Cell) -> float:
         if cell._cell_style_id is None:
-            body_style = self.body_cell_style(cell._table_id)
+            body_style = self.default_cell_style(cell)
             if body_style is not None:
                 return self.cell_property(body_style, "text_wrap")
             return DEFAULT_TEXT_WRAP

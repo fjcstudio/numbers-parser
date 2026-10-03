@@ -496,12 +496,13 @@ def test_unstyled_cell_inherits_table_default_inset(configurable_save_file):
     body_style.cell_properties.padding.bottom = 7.0
     body_style.cell_properties.text_wrap = False
 
-    table.write(0, 0, "never explicitly styled")
-    assert table.cell(0, 0)._cell_style_id is None
+    # (1, 1) is a body cell; row 0 and column 0 are headers
+    table.write(1, 1, "never explicitly styled")
+    assert table.cell(1, 1)._cell_style_id is None
     doc.save(configurable_save_file)
 
     saved_doc = Document(configurable_save_file)
-    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(1, 1)
     assert saved_cell._cell_style_id is None
     assert saved_cell.style.text_inset == 7.0
     assert saved_cell.style.text_wrap is False
@@ -515,14 +516,15 @@ def test_unstyled_cell_inherits_table_default_vertical_alignment(configurable_sa
     body_style = doc._model.objects[table_model.body_cell_style.identifier]
     body_style.cell_properties.vertical_alignment = 1  # kMiddle, not kTop
 
-    table.write(0, 0, "never explicitly styled")
-    assert table.cell(0, 0)._cell_style_id is None
+    # (1, 1) is a body cell; row 0 and column 0 are headers
+    table.write(1, 1, "never explicitly styled")
+    assert table.cell(1, 1)._cell_style_id is None
     doc.save(configurable_save_file)
 
     saved_doc = Document(configurable_save_file)
-    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(1, 1)
     assert saved_cell._cell_style_id is None
-    assert saved_cell.style.alignment.vertical != "top"
+    assert saved_cell.style.alignment.vertical == VerticalJustification.MIDDLE
 
 
 def test_unstyled_cell_inherits_table_default_bg_color(configurable_save_file):
@@ -538,14 +540,15 @@ def test_unstyled_cell_inherits_table_default_bg_color(configurable_save_file):
     body_style.cell_properties.cell_fill.color.a = 1.0
     body_style.cell_properties.cell_fill.color.rgbspace = "srgb"
 
-    table.write(0, 0, "never explicitly styled")
-    assert table.cell(0, 0)._cell_style_id is None
+    # (1, 1) is a body cell; row 0 and column 0 are headers
+    table.write(1, 1, "never explicitly styled")
+    assert table.cell(1, 1)._cell_style_id is None
     doc.save(configurable_save_file)
 
     saved_doc = Document(configurable_save_file)
-    saved_cell = saved_doc.sheets[0].tables[0].cell(0, 0)
+    saved_cell = saved_doc.sheets[0].tables[0].cell(1, 1)
     assert saved_cell._cell_style_id is None
-    assert saved_cell.style.bg_color is not None
+    assert saved_cell.style.bg_color == RGB(51, 102, 153)
 
 
 def test_style_mutation_after_reopen_persists(configurable_save_file):
@@ -648,3 +651,29 @@ def test_register_font_argument_types():
         register_font("Roboto-Regular", family=1)
     with pytest.raises(TypeError, match="bold argument must be boolean"):
         register_font("Roboto-Bold", bold="yes")
+
+
+def test_unstyled_header_cells_report_header_styles(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    model = doc._model
+    table_model = model.objects[table._table_id]
+
+    def fill(field):
+        style = model.objects[getattr(table_model, field).identifier]
+        color = style.cell_properties.cell_fill.color
+        return RGB(round(color.r * 255), round(color.g * 255), round(color.b * 255))
+
+    header_row_fill = fill("header_row_style")
+    header_column_fill = fill("header_column_style")
+    assert header_row_fill != header_column_fill
+    assert table.cell(0, 1).style.bg_color == header_row_fill
+    assert table.cell(1, 0).style.bg_color == header_column_fill
+    assert table.cell(1, 1).style.bg_color is None
+
+    # Editing a never-styled header cell keeps the header fill on save
+    table.cell(0, 1).style.bold = True
+    doc.save(configurable_save_file)
+    saved = Document(configurable_save_file).sheets[0].tables[0]
+    assert saved.cell(0, 1).style.bold
+    assert saved.cell(0, 1).style.bg_color == header_row_fill
