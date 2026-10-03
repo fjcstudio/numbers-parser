@@ -93,6 +93,8 @@ These three fixes apply to formulas and dates that already exist in a document. 
 
 **`test_memory_leaks` no longer counts debug log records** (`bcd4bca`). `test_debug` in `tests/test_unpack_numbers.py` runs `unpack-numbers --debug` in the test process, which sets the `numbers_parser` logger to `DEBUG` and leaves it there. When `test_memory_leaks` ran later on the same pytest-xdist worker, pytest's log capture kept about 1,600 `LogRecord` objects per document load and the test failed. A fixture now sets the logger to `WARNING` for the test and restores the previous level. Upstream has the same order dependency.
 
+**`test_memory_leaks` no longer counts its own previous summary** (`f555bfb`). The test kept the previous iteration's pympler summary alive while it counted again, and each row of a summary is a list, so the count included one list per object type. On CI's Python 3.12 job the test failed twice with exactly one extra object while passing on every other version and in every local run, which fits a change of one in the number of types alive in that worker. The summary is now written to a file in `tmp_path` and deleted before the next count, and on failure the message lists the types that grew. After this change the 3.12 job passed. This explanation is the likely cause, not a proven one: the one-object growth could not be reproduced locally.
+
 **`uv.lock` follows the version** (`46da2bb`). The version bumps in `ddf1aef`, `161b8c9` and `ab18786` changed `pyproject.toml` without `uv.lock`, so every CI job stopped at `uv sync --locked` and no test ran on those commits. The lockfile was regenerated with uv 0.12.20, which keeps lockfile revision 3.
 
 **Review fixes for 4.20.4** (`ade2064`). A review of `ddf1aef` to `1f3ca16` found five bugs in the new image and header and footer code, a test that could not fail, and two documentation claims the code does not meet. The fixes are described in [Images on a sheet](#images-on-a-sheet-161b8c9-3d34716-ade2064), [Header and footer text](#header-and-footer-text-ab18786-ade2064) and [`Style.baseline_shift` and `Style.line_spacing`](#stylebaseline_shift-and-styleline_spacing-ab18786-ade2064). Each fix has a regression test that fails on `1f3ca16`.
@@ -196,7 +198,6 @@ A review of the fork's changes from `9ada0bd` to `7b871d2` found these problems.
 7. **`register_font()` default face depends on registration order, and can replace built-in fonts** (`24964d9`). The first face registered for a family becomes its default, and registering an existing font name replaces the shipped entry for the whole process.
 8. **Extra table owners are indexed only when the document has haunted owners** (`248ad88`). `calculate_table_uuid_map()` sets `_table_id_to_extra_owner_uuids` after the early return for documents without `HAUNTED_OWNER` archives. Found by reading the code; not reproduced.
 9. **Comments cite files that are not in the repository** (`numbers_uuid.py`, `model.py`, `formula.py`), for example a `fresh_eyes_findings_2026-08-28.md` handoff note and `row_storage_desync_bug_report.md`.
-10. **`test_memory_leaks` failed once on Python 3.12 in CI** (on `ade2064`) with a one-object difference. It passes in every local configuration tried, including Python 3.12.3, and the cause is not known.
 
 ## Housekeeping commits
 

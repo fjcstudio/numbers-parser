@@ -27,8 +27,10 @@ def test_memory_leaks(tmp_path):
     if version_info < (3, 11):
         return
 
-    # Each iteration's summary is written to a file rather than kept in memory,
-    # so the snapshot used to explain a failure is not itself counted.
+    # Each iteration's summary is written to a file and deleted rather than kept
+    # in memory. A summary still alive during the next count is counted too, one
+    # list per object type, so a change in the number of types alive in the
+    # process showed up as a one-object difference on CI's Python 3.12 job.
     snapshot = tmp_path / "summary.json"
     last_num_objects = None
     last_num_bytes = None
