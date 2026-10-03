@@ -109,7 +109,7 @@ The fjcstudio-numbers example also saved with the branded fonts stored as `fjcst
 
 ## Still open
 
-1. **Edited cell styles are full copies, not variations of the table style.** When a cell-level property (fill, inset, wrap, vertical alignment) is edited, `add_cell_style()` writes a cell style with every property set and no link to the table's header, body or footer style. Numbers stores such an edit as a variation holding only the changed values, so a cell later moved between header and body follows the table style for everything else. Text style edits follow the Numbers shape since `6dc407d`.
+1. **Resolved: edited cell styles were full copies, not variations of the table style.** Fixed on `feat/cell-style-variations`: a cell-level edit (fill, inset, wrap, vertical alignment) is now an unnamed variation of the table style holding only the changed values. See `FORK_CHANGES.md`. Not yet confirmed in Numbers.app.
 2. **Not checked in Numbers.app.** No change from either review was confirmed by opening files in Numbers.app. The `duplicate_image()` copying of titles, captions and masks is covered by unit tests only, because images created by this library have none of those objects.
 3. **`PLR0917` on `add_image()`** (model and `Sheet`) is left, since fixing it means keyword-only arguments.
 4. **Repository settings.** The Code coverage job fails at the Codecov upload ("Token required - not valid tokenless upload") because there is no `CODECOV_TOKEN` secret, and the Sphinx deploy job fails because GitHub Pages is not enabled. The tests in the coverage job pass.

@@ -217,5 +217,8 @@ def test_editing_an_edited_cell_again_keeps_earlier_edits(configurable_save_file
 def test_dangling_style_id_reads_as_default():
     """Cells referencing a style key missing from the datalist read with defaults."""
     doc = Document("tests/data/custom-format-stress.numbers")
-    cell = doc.sheets[0].tables[0].cell(2, 0)
+    table = doc.sheets[0].tables[0]
+    cell = table.cell(2, 0)
+    assert cell._cell_style_id is None
     assert cell.style is not None
+    assert cell.value == table.cell(2, 0).value
