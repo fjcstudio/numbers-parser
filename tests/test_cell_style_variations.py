@@ -173,7 +173,7 @@ def test_registered_gradient_style_saves(configurable_save_file):
     style = doc.add_style(name="Gradient", bg_color=[RGB(1, 2, 3), RGB(4, 5, 6)])
     table.write(2, 2, "x")
     table.set_cell_style(2, 2, style)
-    saved, cell = _saved(doc, configurable_save_file)
+    _saved_doc, cell = _saved(doc, configurable_save_file)
     assert cell.style.bg_color == [RGB(1, 2, 3), RGB(4, 5, 6)]
 
 
@@ -222,3 +222,27 @@ def test_dangling_style_id_reads_as_default():
     assert cell._cell_style_id is None
     assert cell.style is not None
     assert cell.value == table.cell(2, 0).value
+
+
+def test_removed_fill_matches_the_shape_numbers_writes(configurable_save_file):
+    """Numbers.app wrote cell-fill-none-variation.numbers with Fill set to None on one header cell."""
+    ref = Document("tests/data/cell-fill-none-variation.numbers")
+    ref_cell = ref.sheets[0].tables[0].cell(0, 4)
+    ref_style = ref._model.table_style(ref_cell._table_id, ref_cell._cell_style_id)
+    assert ref_style.super.is_variation
+    assert ref_style.override_count == 1
+    assert ref_style.cell_properties.HasField("cell_fill")
+    assert ref_style.cell_properties.cell_fill.ListFields() == []
+
+    doc = Document("tests/data/cell-fill-none-variation.numbers")
+    table = doc.sheets[0].tables[0]
+    table.cell(0, 1).style.bg_color = None
+    doc.save(configurable_save_file)
+    out = Document(configurable_save_file)
+    cell = out.sheets[0].tables[0].cell(0, 1)
+    style = out._model.table_style(cell._table_id, cell._cell_style_id)
+    assert style.super.is_variation
+    assert style.override_count == ref_style.override_count
+    assert style.super.parent.identifier == ref_style.super.parent.identifier
+    assert style.cell_properties.cell_fill.ListFields() == []
+    assert cell.style.bg_color is None
