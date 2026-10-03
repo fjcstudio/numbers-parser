@@ -1462,8 +1462,8 @@ class _NumbersModel(Cacheable):
         own count to work out "which flattened position is row N" then
         silently misattributes every row from that point on to the wrong
         stored content -- confirmed directly against a real Numbers.app
-        round trip of a large, sparse table; see
-        ``row_storage_desync_bug_report.md`` for the full mechanism.
+        round trip of a large, sparse table (commit f002f4d);
+        ``tests/test_row_storage_desync.py`` reproduces the fault.
         Deriving the row from the rowInfo itself sidesteps the desync
         entirely, since a rowInfo's own tile position can't go stale the
         way a second, separate structure can.
@@ -2269,9 +2269,8 @@ class _NumbersModel(Cacheable):
         # information it requires missing, it silently retires ("adopts")
         # the untrusted owner and rebuilds the table's identity -- and every
         # reference into the table that named it under the old identity --
-        # from scratch, under a value it derives itself. See derive_table_identity_uuid() and
-        # Claude chat handoff notes/session_2026-08-28_artifacts/
-        # fresh_eyes_findings_2026-08-28.md (round 4) for the round-trip proof.
+        # from scratch, under a value it derives itself. See derive_table_identity_uuid(),
+        # commit 7158166 and tests/test_table_identity_adoption.py.
         # The aux owner family below (HAUNTED_OWNER) is deliberately left
         # untouched: Numbers keeps it regardless of its UUID value.
         table_model_owner_uuid = derive_table_identity_uuid(table_id_uuid)
@@ -2390,9 +2389,8 @@ class _NumbersModel(Cacheable):
         This is one of the three sites (alongside FormulaOwnerDependenciesArchive
         .formula_owner_uid and its owner_id_map entry) that Numbers.app checks
         when deciding whether to keep or "adopt" a table's formula owner -- see
-        derive_table_identity_uuid() and
-        Claude chat handoff notes/session_2026-08-28_artifacts/
-        fresh_eyes_findings_2026-08-28.md. Some older documents (see issue-18)
+        derive_table_identity_uuid(), commit 7158166 and
+        tests/test_table_identity_adoption.py. Some older documents (see issue-18)
         do not carry a HeaderNameMgrArchive at all; in that case there is
         nothing to register and this is a no-op, matching how the rest of the
         model tolerates that document shape.
