@@ -13,6 +13,8 @@ from struct import pack
 from typing import ClassVar
 from warnings import warn
 
+from google.protobuf import json_format
+
 from numbers_parser.bullets import (
     BULLET_CONVERSION,
     BULLET_PREFIXES,
@@ -217,6 +219,11 @@ class DataLists(Cacheable):
         """Return the an entry in a table's datalist matching a key."""
         self.add_table(table_id)
         return self._datalists[table_id]["by_key"][key]
+
+    def has_key(self, table_id: int, key: int) -> bool:
+        """Return True if a key has an entry in a table's datalist."""
+        self.add_table(table_id)
+        return key in self._datalists[table_id]["by_key"]
 
     def value_key(self, value):
         if hasattr(value, "DESCRIPTOR"):
@@ -2564,6 +2571,16 @@ class _NumbersModel(Cacheable):
         else:
             strikethru = CharacterStyle.StrikethruType.kNoStrikethru
         style_obj = self.objects[style._text_style_obj_id]
+        for color in (
+            style_obj.char_properties.font_color,
+            style_obj.char_properties.tsd_fill.color,
+        ):
+            # A style that never set a text color has no color model, which
+            # is a required field once any component of the color is set
+            if not color.HasField("model"):
+                color.model = TSPMessages.Color.rgb
+                color.a = 1.0
+                color.rgbspace = TSPMessages.Color.srgb
         style_obj.char_properties.font_color.r = style.font_color.r / 255
         style_obj.char_properties.font_color.g = style.font_color.g / 255
         style_obj.char_properties.font_color.b = style.font_color.b / 255
@@ -2725,8 +2742,8 @@ class _NumbersModel(Cacheable):
         style holding every cell property. A cell's own edit is stored the way
         Numbers stores a cell override: an unnamed variation of the table's
         header, body or footer cell style for that position, holding only the
-        properties that differ from it. Removing a fill is the one edit a
-        variation cannot express, so that case still writes a full cell style.
+        properties that differ from it. Removing a fill the table style
+        provides is stored as an empty fill, which Numbers also uses for "no fill".
         """
         cell_styles = {}
         registered = {id(x) for x in self.styles.values()}
@@ -2736,9 +2753,7 @@ class _NumbersModel(Cacheable):
                     continue
                 style = cell._style
                 base_id = None if id(style) in registered else self._default_cell_style_id(cell)
-                overrides = (
-                    None if base_id is None else self._cell_style_overrides(base_id, style)
-                )
+                overrides = None if base_id is None else self._cell_style_overrides(base_id, style)
                 if overrides is not None:
                     if not overrides:
                         # Same as the table's own style for this position
@@ -2759,20 +2774,17 @@ class _NumbersModel(Cacheable):
                     + str(style.text_wrap)
                 )
                 if style.bg_color is not None:
-                    fingerprint = fingerprint + (
-                        str(style.bg_color.r) + str(style.bg_color.g) + str(style.bg_color.b)
-                    )
+                    fingerprint += repr(style.bg_color)
                 if style.bg_image is not None:
                     fingerprint += style.bg_image.filename
                 if fingerprint not in cell_styles:
                     cell_styles[fingerprint] = self.add_cell_style(style)
                 style._cell_style_obj_id = cell_styles[fingerprint]
 
-    def _cell_style_overrides(self, base_id: int, style: Style) -> dict | None:
+    def _cell_style_overrides(self, base_id: int, style: Style) -> dict:
         """
         Return the cell_properties of a style that differ from the base cell
-        style, as a dict for a variation of it, or None when the difference
-        cannot be expressed as a variation (a fill removed from the base).
+        style, as a dict for a variation of it.
         """
         base = self.objects[base_id]
         overrides = {}
@@ -2780,16 +2792,28 @@ class _NumbersModel(Cacheable):
             overrides.update(self._cell_fill_attrs(style))
         else:
             base_fill = self._style_fill(base)
-            base_color = rgb(base_fill.color) if base_fill is not None and base_fill.HasField("color") else None
+            base_has_fill = base_fill is not None and any(
+                base_fill.HasField(x) for x in ("color", "gradient", "image")
+            )
             if style.bg_color is None:
-                if base_fill is not None and (
-                    base_fill.HasField("color")
-                    or base_fill.HasField("gradient")
-                    or base_fill.HasField("image")
-                ):
-                    return None
-            elif style.bg_color != base_color:
-                overrides.update(self._cell_fill_attrs(style))
+                if base_has_fill:
+                    # An empty fill is how Numbers stores "no fill"
+                    overrides["cell_fill"] = {}
+            elif style.bg_color != self._fill_colors(base_fill):
+                current = (
+                    self._style_fill(self.objects[style._cell_style_obj_id])
+                    if style._cell_style_obj_id is not None
+                    else None
+                )
+                if current is not None and self._fill_colors(current) == style.bg_color:
+                    # Unchanged since it was read: keep the stored fill exactly,
+                    # which holds more than the list of colors reads back
+                    overrides["cell_fill"] = json_format.MessageToDict(
+                        current,
+                        preserving_proto_field_name=True,
+                    )
+                else:
+                    overrides.update(self._cell_fill_attrs(style))
         inset = self.cell_property(base, "padding").left
         if style.text_inset != inset:
             overrides["padding"] = {
@@ -2828,6 +2852,47 @@ class _NumbersModel(Cacheable):
         self._register_style_variation(style_id, style)
         return style_id
 
+    @staticmethod
+    def _gradient_attrs(colors: list) -> dict:
+        """
+        Return a linear gradient fill for a list of colors, with evenly spaced
+        stops, in the shape Numbers writes for a gradient set in its Fill
+        controls (vertical, advanced gradient).
+        """
+        last = max(len(colors) - 1, 1)
+        return {
+            "type": "Linear",
+            "stops": [
+                {
+                    "color": {
+                        "model": "rgb",
+                        "r": color.r / 255,
+                        "g": color.g / 255,
+                        "b": color.b / 255,
+                        "a": 1.0,
+                        "rgbspace": "srgb",
+                    },
+                    "fraction": index / last,
+                    "inflection": 0.5,
+                }
+                for index, color in enumerate(colors)
+            ],
+            "opacity": 1.0,
+            "advancedGradient": True,
+            "anglegradient": {"gradientangle": 4.71238899},
+        }
+
+    @staticmethod
+    def _fill_colors(fill: object) -> RGB | list[RGB] | None:
+        """Return a cell fill as a color, a list of gradient colors, or None."""
+        if fill is None:
+            return None
+        if fill.HasField("color"):
+            return rgb(fill.color)
+        if fill.HasField("gradient"):
+            return [rgb(stop.color) for stop in fill.gradient.stops]
+        return None
+
     def _cell_fill_attrs(self, style: Style) -> dict:
         """Return the cell_properties entry for a style's fill, or an empty dict."""
         if style.bg_image is not None:
@@ -2856,6 +2921,8 @@ class _NumbersModel(Cacheable):
                     },
                 },
             }
+        elif isinstance(style.bg_color, list):
+            color_attrs = {"cell_fill": {"gradient": self._gradient_attrs(style.bg_color)}}
         elif style.bg_color is not None:
             color_attrs = {
                 "cell_fill": {

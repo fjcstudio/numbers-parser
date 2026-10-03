@@ -934,10 +934,17 @@ class Cell(CellStorageFlags, Cacheable):
             storage_flags._rich_id = unpack("<i", buffer[offset : offset + 4])[0]
             offset += 4
         if flags & 0x20:
-            storage_flags._cell_style_id = unpack("<i", buffer[offset : offset + 4])[0]
+            style_id = unpack("<i", buffer[offset : offset + 4])[0]
+            # Some documents reference a style key that is absent from the
+            # table's style datalist: treat it as no style so the cell falls
+            # back to the table default instead of raising KeyError.
+            if model._table_styles.has_key(table_id, style_id):
+                storage_flags._cell_style_id = style_id
             offset += 4
         if flags & 0x40:
-            storage_flags._text_style_id = unpack("<i", buffer[offset : offset + 4])[0]
+            style_id = unpack("<i", buffer[offset : offset + 4])[0]
+            if model._table_styles.has_key(table_id, style_id):
+                storage_flags._text_style_id = style_id
             offset += 4
         if flags & 0x80:
             # cond_style_id skipped
