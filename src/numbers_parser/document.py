@@ -1432,7 +1432,10 @@ class Table(Cacheable):
 
         self._model.shift_stroke_rows(self._table_id, start_row, num_rows)
         self._model.propagate_borders_into_inserted_rows(
-            self._table_id, self._data, start_row, num_rows,
+            self._table_id,
+            self._data,
+            start_row,
+            num_rows,
         )
 
         for row in range(start_row, self.num_rows):
@@ -1518,7 +1521,10 @@ class Table(Cacheable):
                     self.write(row, col, default)
 
         self._model.propagate_borders_into_inserted_columns(
-            self._table_id, self._data, start_col, num_cols,
+            self._table_id,
+            self._data,
+            start_col,
+            num_cols,
         )
 
     def delete_row(

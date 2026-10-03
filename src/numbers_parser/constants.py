@@ -485,7 +485,8 @@ def register_font(
     bold: bool = False,
     italic: bool = False,
 ) -> None:
-    """Make a font that is not shipped with Numbers usable in a :class:`Style`.
+    """
+    Make a font that is not shipped with Numbers usable in a :class:`Style`.
 
     ``name`` is the PostScript name stored in the document, for example
     ``"Roboto-Regular"``. ``family`` is the name passed as ``Style.font_name``

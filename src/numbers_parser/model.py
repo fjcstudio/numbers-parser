@@ -1328,7 +1328,8 @@ class _NumbersModel(Cacheable):
                 for sheet_id in self.sheet_ids()
                 for table_id in self.table_ids(sheet_id)
                 if table_uuid == self.table_base_id(table_id)
-                or table_uuid in getattr(self, "_table_id_to_extra_owner_uuids", {}).get(table_id, set())
+                or table_uuid
+                in getattr(self, "_table_id_to_extra_owner_uuids", {}).get(table_id, set())
             ),
             None,
         )
