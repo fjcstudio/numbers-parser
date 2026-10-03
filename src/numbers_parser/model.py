@@ -1114,6 +1114,8 @@ class _NumbersModel(Cacheable):
         # Each Table Model has a UUID which is used in references to the table. See
         # Numbers.md#uuid-mapping for more details.
 
+        self._calculate_extra_owner_uuids()
+
         # For haunted owner archive types, map formula_owner_uids to their base_owner_uids
         haunted_owner_ids = [
             obj_id
@@ -1144,7 +1146,8 @@ class _NumbersModel(Cacheable):
             uuid_to_hex(self.objects[obj_id].base_owner_uid): obj_id for obj_id in haunted_owner_ids
         }
 
-        # In addition to the haunted-owner base UUID above, some cross-table
+    def _calculate_extra_owner_uuids(self) -> None:
+        # In addition to the haunted-owner base UUID, some cross-table
         # references (observed empirically against real Numbers.app output)
         # are keyed by a *different*, auxiliary TABLE_MODEL owner's own
         # formula_owner_uid rather than the haunted-owner base UUID. This
@@ -1328,8 +1331,7 @@ class _NumbersModel(Cacheable):
                 for sheet_id in self.sheet_ids()
                 for table_id in self.table_ids(sheet_id)
                 if table_uuid == self.table_base_id(table_id)
-                or table_uuid
-                in getattr(self, "_table_id_to_extra_owner_uuids", {}).get(table_id, set())
+                or table_uuid in self._table_id_to_extra_owner_uuids.get(table_id, set())
             ),
             None,
         )
