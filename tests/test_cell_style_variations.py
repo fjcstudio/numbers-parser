@@ -246,3 +246,34 @@ def test_removed_fill_matches_the_shape_numbers_writes(configurable_save_file):
     assert style.super.parent.identifier == ref_style.super.parent.identifier
     assert style.cell_properties.cell_fill.ListFields() == []
     assert cell.style.bg_color is None
+
+
+def test_editing_a_cell_keeps_the_image_fill_of_its_table_style(configurable_save_file):
+    doc = Document()
+    table = doc.sheets[0].tables[0]
+    table.write(2, 2, "x")
+    table.write(4, 4, "y")
+    table.cell(2, 2).style.bg_image = BackgroundImage(PNG, "dot.png")
+    saved, source = _saved(doc, configurable_save_file)
+    model = saved._model
+    image_id = _style_object(saved, source).cell_properties.cell_fill.image.imagedata.identifier
+    body = model.objects[model._default_cell_style_id(saved.sheets[0].tables[0].cell(4, 4))]
+    body.cell_properties.cell_fill.image.imagedata.identifier = image_id
+    body.cell_properties.cell_fill.image.technique = 1
+    saved.save(configurable_save_file)
+
+    reopened = Document(configurable_save_file)
+    cell = reopened.sheets[0].tables[0].cell(4, 4)
+    assert cell.style.bg_image is not None
+    cell.style.text_wrap = not cell.style.text_wrap
+    reopened.save(configurable_save_file)
+
+    final = Document(configurable_save_file)
+    cell = final.sheets[0].tables[0].cell(4, 4)
+    style = _style_object(final, cell)
+    assert style.super.is_variation
+    assert style.override_count == 1
+    assert style.cell_properties.HasField("text_wrap")
+    assert not style.cell_properties.HasField("cell_fill")
+    assert cell.style.bg_image is not None
+    assert cell.style.bg_image.data == PNG

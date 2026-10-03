@@ -897,7 +897,7 @@ class Cell(CellStorageFlags, Cacheable):
         return cell
 
     @classmethod
-    def _from_storage(  # noqa: PLR0912
+    def _from_storage(  # noqa: PLR0912, PLR0915
         cls,
         table_id: int,
         row: int,
@@ -1240,12 +1240,16 @@ class Cell(CellStorageFlags, Cacheable):
     def _image_data(self) -> tuple[bytes, str]:
         """Return the background image data for a cell or None if no image."""
         if self._cell_style_id is None:
-            return None
-        style = self._model.table_style(self._table_id, self._cell_style_id)
-        if not style.cell_properties.cell_fill.HasField("image"):
+            style = self._model.default_cell_style(self)
+        else:
+            style = self._model.table_style(self._table_id, self._cell_style_id)
+        # Follow the parent chain: a cell that overrides another property still
+        # shows the image its table style provides
+        fill = self._model._style_fill(style) if style is not None else None
+        if fill is None or not fill.HasField("image"):
             return None
 
-        image_id = style.cell_properties.cell_fill.image.imagedata.identifier
+        image_id = fill.image.imagedata.identifier
         datas = self._model.objects[PACKAGE_ID].datas
         stored_filename = next(x.file_name for x in datas if x.identifier == image_id)
         preferred_filename = next(x.preferred_file_name for x in datas if x.identifier == image_id)

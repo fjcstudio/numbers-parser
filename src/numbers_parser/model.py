@@ -2789,7 +2789,8 @@ class _NumbersModel(Cacheable):
         base = self.objects[base_id]
         overrides = {}
         if style.bg_image is not None:
-            overrides.update(self._cell_fill_attrs(style))
+            if not self._fill_has_image(self._style_fill(base), style.bg_image):
+                overrides.update(self._cell_fill_attrs(style))
         else:
             base_fill = self._style_fill(base)
             base_has_fill = base_fill is not None and any(
@@ -2827,6 +2828,16 @@ class _NumbersModel(Cacheable):
         if int(style.alignment.vertical) != self.cell_property(base, "vertical_alignment"):
             overrides["vertical_alignment"] = style.alignment.vertical
         return overrides
+
+    def _fill_has_image(self, fill: object | None, image: object) -> bool:
+        """Return True if a fill is an image fill holding the same image data."""
+        if fill is None or not fill.HasField("image"):
+            return False
+        image_id = fill.image.imagedata.identifier
+        digest = sha1(image.data).digest()  # noqa: S324
+        return any(
+            x.identifier == image_id and x.digest == digest for x in self.objects[PACKAGE_ID].datas
+        )
 
     def _style_fill(self, style: object) -> object | None:
         """Return a cell style's fill, following parent styles when it has none."""
@@ -2912,6 +2923,10 @@ class _NumbersModel(Cacheable):
                     ),
                 )
                 self._images[digest] = image_id
+                # Setting Style.bg_image on a cell does not go through add_style(),
+                # which stores the file; without it the saved reference dangles
+                if f"Data/{style.bg_image.filename}" not in self.objects.file_store:
+                    self.store_image(style.bg_image.data, style.bg_image.filename)
             color_attrs = {
                 "cell_fill": {
                     "image": {
