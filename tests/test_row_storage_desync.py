@@ -42,9 +42,7 @@ def _sparsify_tile_in_place(model, table_id, tile_index, rows_to_keep):
     tile_ref = bds.tiles.tiles[tile_index]
     tile_base_row = tile_ref.tileid * tile_size
     tile = model.objects[tile_ref.tile.identifier]
-    kept = [
-        r for r in tile.rowInfos if (tile_base_row + r.tile_row_index) in rows_to_keep
-    ]
+    kept = [r for r in tile.rowInfos if (tile_base_row + r.tile_row_index) in rows_to_keep]
     del tile.rowInfos[:]
     tile.rowInfos.extend(kept)
 
